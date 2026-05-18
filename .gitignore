@@ -1,0 +1,5 @@
+bin/
+*.exe
+.env
+*.json
+!go.sum
