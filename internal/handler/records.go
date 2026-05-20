@@ -34,9 +34,8 @@ func (h *RecordsHandler) List(w http.ResponseWriter, r *http.Request) {
 	lastName := q.Get("last_name")
 	recordType := q.Get("record_type")
 	activeStatus := q.Get("active_status")
-	search := q.Get("search")
 
-	needsNameJoin := firstName != "" || lastName != "" || search != ""
+	needsNameJoin := firstName != "" || lastName != ""
 
 	var conditions []string
 	var args []interface{}
@@ -56,10 +55,6 @@ func (h *RecordsHandler) List(w http.ResponseWriter, r *http.Request) {
 	if lastName != "" {
 		conditions = append(conditions, "sn.surname LIKE ?")
 		args = append(args, "%"+lastName+"%")
-	}
-	if search != "" {
-		conditions = append(conditions, "(sn.first_name LIKE ? OR sn.surname LIKE ? OR sn.single_string_name LIKE ? OR sn.entity_name LIKE ?)")
-		args = append(args, "%"+search+"%", "%"+search+"%", "%"+search+"%", "%"+search+"%")
 	}
 
 	whereClause := ""

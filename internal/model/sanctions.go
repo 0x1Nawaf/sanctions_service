@@ -1,16 +1,47 @@
 package model
 
-import "database/sql"
+import (
+	"database/sql"
+	"encoding/json"
+)
+
+// NullString wraps sql.NullString to serialize as a plain string or null in JSON,
+// instead of the default {"String":"...","Valid":true} format.
+type NullString struct {
+	sql.NullString
+}
+
+func (ns NullString) MarshalJSON() ([]byte, error) {
+	if !ns.Valid {
+		return json.Marshal(nil)
+	}
+	return json.Marshal(ns.String)
+}
+
+func (ns *NullString) UnmarshalJSON(data []byte) error {
+	var s *string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	if s != nil {
+		ns.Valid = true
+		ns.String = *s
+	} else {
+		ns.Valid = false
+		ns.String = ""
+	}
+	return nil
+}
 
 type SanctionsRecord struct {
-	ID           uint32         `json:"id"`
-	RecordType   sql.NullString `json:"record_type"`
-	Action       sql.NullString `json:"action"`
-	ActionDate   sql.NullString `json:"action_date"`
-	Gender       sql.NullString `json:"gender"`
-	ActiveStatus sql.NullString `json:"active_status"`
-	Deceased     sql.NullString `json:"deceased"`
-	ProfileNotes sql.NullString `json:"profile_notes"`
+	ID           uint32     `json:"id"`
+	RecordType   NullString `json:"record_type"`
+	Action       NullString `json:"action"`
+	ActionDate   NullString `json:"action_date"`
+	Gender       NullString `json:"gender"`
+	ActiveStatus NullString `json:"active_status"`
+	Deceased     NullString `json:"deceased"`
+	ProfileNotes NullString `json:"profile_notes"`
 
 	Names     []SanctionsName    `json:"names,omitempty"`
 	Dates     []SanctionsDate    `json:"dates,omitempty"`
@@ -19,18 +50,18 @@ type SanctionsRecord struct {
 }
 
 type SanctionsName struct {
-	ID                 uint64         `json:"id"`
-	RecordID           uint32         `json:"record_id"`
-	NameType           sql.NullString `json:"name_type"`
-	TitleHonorific     sql.NullString `json:"title_honorific"`
-	FirstName          sql.NullString `json:"first_name"`
-	MiddleName         sql.NullString `json:"middle_name"`
-	Surname            sql.NullString `json:"surname"`
-	MaidenName         sql.NullString `json:"maiden_name"`
-	Suffix             sql.NullString `json:"suffix"`
-	SingleStringName   sql.NullString `json:"single_string_name"`
-	OriginalScriptName sql.NullString `json:"original_script_name"`
-	EntityName         sql.NullString `json:"entity_name"`
+	ID                 uint64     `json:"id"`
+	RecordID           uint32     `json:"record_id"`
+	NameType           NullString `json:"name_type"`
+	TitleHonorific     NullString `json:"title_honorific"`
+	FirstName          NullString `json:"first_name"`
+	MiddleName         NullString `json:"middle_name"`
+	Surname            NullString `json:"surname"`
+	MaidenName         NullString `json:"maiden_name"`
+	Suffix             NullString `json:"suffix"`
+	SingleStringName   NullString `json:"single_string_name"`
+	OriginalScriptName NullString `json:"original_script_name"`
+	EntityName         NullString `json:"entity_name"`
 }
 
 func (n *SanctionsName) DisplayName() string {
@@ -54,89 +85,89 @@ func (n *SanctionsName) DisplayName() string {
 }
 
 type SanctionsDate struct {
-	ID       uint64         `json:"id"`
-	RecordID uint32         `json:"record_id"`
-	DateType sql.NullString `json:"date_type"`
-	Day      sql.NullString `json:"day"`
-	Month    sql.NullString `json:"month"`
-	Year     sql.NullString `json:"year"`
-	Note     sql.NullString `json:"note"`
+	ID       uint64     `json:"id"`
+	RecordID uint32     `json:"record_id"`
+	DateType NullString `json:"date_type"`
+	Day      NullString `json:"day"`
+	Month    NullString `json:"month"`
+	Year     NullString `json:"year"`
+	Note     NullString `json:"note"`
 }
 
 type SanctionsCountry struct {
-	ID          uint64         `json:"id"`
-	RecordID    uint32         `json:"record_id"`
-	CountryType sql.NullString `json:"country_type"`
-	CountryCode sql.NullString `json:"country_code"`
+	ID          uint64     `json:"id"`
+	RecordID    uint32     `json:"record_id"`
+	CountryType NullString `json:"country_type"`
+	CountryCode NullString `json:"country_code"`
 }
 
 type SanctionsImage struct {
-	ID       uint64         `json:"id"`
-	RecordID uint32         `json:"record_id"`
-	URL      sql.NullString `json:"url"`
+	ID       uint64     `json:"id"`
+	RecordID uint32     `json:"record_id"`
+	URL      NullString `json:"url"`
 }
 
 type SanctionsDescription struct {
-	ID             uint64 `json:"id"`
-	RecordID       uint32 `json:"record_id"`
+	ID             uint64  `json:"id"`
+	RecordID       uint32  `json:"record_id"`
 	Description1ID *uint16 `json:"description1_id"`
 	Description2ID *uint16 `json:"description2_id"`
 	Description3ID *uint16 `json:"description3_id"`
 }
 
 type SanctionsRole struct {
-	ID         uint64         `json:"id"`
-	RecordID   uint32         `json:"record_id"`
-	RoleType   sql.NullString `json:"role_type"`
-	OccCatCode *uint16        `json:"occ_cat_code"`
-	Title      sql.NullString `json:"title"`
-	SinceDay   sql.NullString `json:"since_day"`
-	SinceMonth sql.NullString `json:"since_month"`
-	SinceYear  sql.NullString `json:"since_year"`
-	ToDay      sql.NullString `json:"to_day"`
-	ToMonth    sql.NullString `json:"to_month"`
-	ToYear     sql.NullString `json:"to_year"`
+	ID         uint64     `json:"id"`
+	RecordID   uint32     `json:"record_id"`
+	RoleType   NullString `json:"role_type"`
+	OccCatCode *uint16    `json:"occ_cat_code"`
+	Title      NullString `json:"title"`
+	SinceDay   NullString `json:"since_day"`
+	SinceMonth NullString `json:"since_month"`
+	SinceYear  NullString `json:"since_year"`
+	ToDay      NullString `json:"to_day"`
+	ToMonth    NullString `json:"to_month"`
+	ToYear     NullString `json:"to_year"`
 }
 
 type SanctionsBirthPlace struct {
-	ID       uint64         `json:"id"`
-	RecordID uint32         `json:"record_id"`
-	Place    sql.NullString `json:"place"`
+	ID       uint64     `json:"id"`
+	RecordID uint32     `json:"record_id"`
+	Place    NullString `json:"place"`
 }
 
 type SanctionsRef struct {
-	ID              uint64  `json:"id"`
-	RecordID        uint32  `json:"record_id"`
-	SanctionsRefID  *uint32 `json:"sanctions_ref_id"`
-	SinceDay        sql.NullString `json:"since_day"`
-	SinceMonth      sql.NullString `json:"since_month"`
-	SinceYear       sql.NullString `json:"since_year"`
-	ToDay           sql.NullString `json:"to_day"`
-	ToMonth         sql.NullString `json:"to_month"`
-	ToYear          sql.NullString `json:"to_year"`
+	ID             uint64     `json:"id"`
+	RecordID       uint32     `json:"record_id"`
+	SanctionsRefID *uint32    `json:"sanctions_ref_id"`
+	SinceDay       NullString `json:"since_day"`
+	SinceMonth     NullString `json:"since_month"`
+	SinceYear      NullString `json:"since_year"`
+	ToDay          NullString `json:"to_day"`
+	ToMonth        NullString `json:"to_month"`
+	ToYear         NullString `json:"to_year"`
 }
 
 type SanctionsIDNumber struct {
-	ID       uint64         `json:"id"`
-	RecordID uint32         `json:"record_id"`
-	IDType   sql.NullString `json:"id_type"`
-	IDValue  sql.NullString `json:"id_value"`
-	IDNotes  sql.NullString `json:"id_notes"`
+	ID       uint64     `json:"id"`
+	RecordID uint32     `json:"record_id"`
+	IDType   NullString `json:"id_type"`
+	IDValue  NullString `json:"id_value"`
+	IDNotes  NullString `json:"id_notes"`
 }
 
 type SanctionsSource struct {
-	ID       uint64         `json:"id"`
-	RecordID uint32         `json:"record_id"`
-	URL      sql.NullString `json:"url"`
+	ID       uint64     `json:"id"`
+	RecordID uint32     `json:"record_id"`
+	URL      NullString `json:"url"`
 }
 
 type SanctionsAddress struct {
-	ID             uint64         `json:"id"`
-	RecordID       uint32         `json:"record_id"`
-	AddressLine    sql.NullString `json:"address_line"`
-	AddressCity    sql.NullString `json:"address_city"`
-	AddressCountry sql.NullString `json:"address_country"`
-	URL            sql.NullString `json:"url"`
+	ID             uint64     `json:"id"`
+	RecordID       uint32     `json:"record_id"`
+	AddressLine    NullString `json:"address_line"`
+	AddressCity    NullString `json:"address_city"`
+	AddressCountry NullString `json:"address_country"`
+	URL            NullString `json:"url"`
 }
 
 type SanctionsAssociation struct {
