@@ -66,6 +66,12 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		return nil, err
 	}
 
+	// Also fetch original_script_name variants for scoring against non-Latin queries
+	scriptCandidates, err := h.fetchOriginalScriptCandidates(candidates)
+	if err != nil {
+		return nil, err
+	}
+
 	type scored struct {
 		recordID uint32
 		score    int
@@ -74,6 +80,17 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 
 	bestByRecord := make(map[uint32]scored)
 	for _, c := range candidates {
+		s := scoring.ScoreName(req.Name, c.name)
+		if s < req.MinScore {
+			continue
+		}
+		if existing, ok := bestByRecord[c.recordID]; !ok || s > existing.score {
+			bestByRecord[c.recordID] = scored{recordID: c.recordID, score: s, name: c.name}
+		}
+	}
+
+	// Score against original script names too (for Arabic/Cyrillic/etc queries)
+	for _, c := range scriptCandidates {
 		s := scoring.ScoreName(req.Name, c.name)
 		if s < req.MinScore {
 			continue
@@ -138,20 +155,44 @@ func (h *ScreenHandler) fetchCandidates(searchName string) ([]nameCandidate, err
 		return nil, nil
 	}
 
+	candidates, err := h.fetchFulltextCandidates(tokens)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(candidates) == 0 {
+		candidates, err = h.fetchLikeCandidates(tokens)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return candidates, nil
+}
+
+func (h *ScreenHandler) fetchFulltextCandidates(tokens []string) ([]nameCandidate, error) {
+	// Use optional match: require at least half of the tokens (rounded up).
+	// This allows partial matches for multi-part names where some tokens
+	// might be in non-indexed columns or have slight variations.
+	required := (len(tokens) + 1) / 2
 	ftTerms := make([]string, len(tokens))
 	for i, t := range tokens {
-		ftTerms[i] = "+" + t + "*"
+		if i < required {
+			ftTerms[i] = "+" + t + "*"
+		} else {
+			ftTerms[i] = t + "*"
+		}
 	}
 	ftQuery := strings.Join(ftTerms, " ")
 
 	query := `
 		SELECT sn.record_id,
 		       COALESCE(sn.entity_name, sn.single_string_name, CONCAT_WS(' ', sn.first_name, sn.middle_name, sn.surname)) AS display_name,
-		       MATCH(sn.first_name, sn.surname, sn.single_string_name, sn.entity_name) AGAINST(? IN NATURAL LANGUAGE MODE) AS relevance
+		       MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN NATURAL LANGUAGE MODE) AS relevance
 		FROM sanctions_names sn
 		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
 		WHERE sr.active_status = 'Active'
-		  AND MATCH(sn.first_name, sn.surname, sn.single_string_name, sn.entity_name) AGAINST(? IN BOOLEAN MODE)
+		  AND MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN BOOLEAN MODE)
 		ORDER BY relevance DESC
 		LIMIT 300
 	`
@@ -173,6 +214,116 @@ func (h *ScreenHandler) fetchCandidates(searchName string) ([]nameCandidate, err
 		if name.Valid && name.String != "" {
 			candidates = append(candidates, nameCandidate{recordID: recordID, name: name.String})
 		}
+	}
+
+	return candidates, nil
+}
+
+func (h *ScreenHandler) fetchLikeCandidates(tokens []string) ([]nameCandidate, error) {
+	// Fallback: LIKE-based search across all name columns including original_script_name.
+	// Used when FULLTEXT returns nothing (e.g. short tokens below ft_min_token_size,
+	// or non-Latin script text that FULLTEXT tokenization struggles with).
+	var conditions []string
+	var args []interface{}
+
+	searchCols := []string{"sn.first_name", "sn.middle_name", "sn.surname", "sn.single_string_name", "sn.original_script_name", "sn.entity_name"}
+
+	for _, token := range tokens {
+		var colConditions []string
+		for _, col := range searchCols {
+			colConditions = append(colConditions, col+" LIKE ?")
+			args = append(args, "%"+token+"%")
+		}
+		conditions = append(conditions, "("+strings.Join(colConditions, " OR ")+")")
+	}
+
+	// Require at least half the tokens to match somewhere
+	required := (len(tokens) + 1) / 2
+	whereClause := ""
+	if len(conditions) <= 2 {
+		whereClause = strings.Join(conditions, " AND ")
+	} else {
+		// Build a scoring approach: count how many token conditions match
+		whereClause = fmt.Sprintf("(%s) >= %d",
+			strings.Join(wrapConditions(conditions), " + "), required)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT sn.record_id,
+		       COALESCE(sn.entity_name, sn.single_string_name, CONCAT_WS(' ', sn.first_name, sn.middle_name, sn.surname)) AS display_name
+		FROM sanctions_names sn
+		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
+		WHERE sr.active_status = 'Active'
+		  AND %s
+		LIMIT 300
+	`, whereClause)
+
+	rows, err := h.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("like fallback query: %w", err)
+	}
+	defer rows.Close()
+
+	var candidates []nameCandidate
+	for rows.Next() {
+		var recordID uint32
+		var name sql.NullString
+		if err := rows.Scan(&recordID, &name); err != nil {
+			continue
+		}
+		if name.Valid && name.String != "" {
+			candidates = append(candidates, nameCandidate{recordID: recordID, name: name.String})
+		}
+	}
+
+	return candidates, nil
+}
+
+func wrapConditions(conditions []string) []string {
+	wrapped := make([]string, len(conditions))
+	for i, c := range conditions {
+		wrapped[i] = "CASE WHEN " + c + " THEN 1 ELSE 0 END"
+	}
+	return wrapped
+}
+
+func (h *ScreenHandler) fetchOriginalScriptCandidates(baseCandidates []nameCandidate) ([]nameCandidate, error) {
+	if len(baseCandidates) == 0 {
+		return nil, nil
+	}
+
+	recordIDs := make(map[uint32]bool)
+	for _, c := range baseCandidates {
+		recordIDs[c.recordID] = true
+	}
+
+	placeholders := make([]string, 0, len(recordIDs))
+	args := make([]interface{}, 0, len(recordIDs))
+	for id := range recordIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT record_id, original_script_name
+		FROM sanctions_names
+		WHERE record_id IN (%s) AND original_script_name IS NOT NULL AND original_script_name != ''
+	`, strings.Join(placeholders, ","))
+
+	rows, err := h.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var candidates []nameCandidate
+	for rows.Next() {
+		var recordID uint32
+		var name string
+		if err := rows.Scan(&recordID, &name); err != nil {
+			continue
+		}
+		candidates = append(candidates, nameCandidate{recordID: recordID, name: name})
 	}
 
 	return candidates, nil

@@ -19,13 +19,15 @@ func ScoreName(searchName, candidateName string) int {
 
 	// Check prefix match
 	if strings.HasPrefix(candidate, search) || strings.HasPrefix(search, candidate) {
-		shorter := len(search)
-		if len(candidate) < shorter {
-			shorter = len(candidate)
+		searchRunes := []rune(search)
+		candidateRunes := []rune(candidate)
+		shorter := len(searchRunes)
+		if len(candidateRunes) < shorter {
+			shorter = len(candidateRunes)
 		}
-		longer := len(search)
-		if len(candidate) > longer {
-			longer = len(candidate)
+		longer := len(searchRunes)
+		if len(candidateRunes) > longer {
+			longer = len(candidateRunes)
 		}
 		return 60 + (40 * shorter / longer)
 	}
@@ -97,10 +99,12 @@ func coverageMatchScore(searchTokens, candidateTokens []string) int {
 }
 
 func levenshteinSimilarity(a, b string) int {
-	d := levenshteinDistance(a, b)
-	maxLen := len(a)
-	if len(b) > maxLen {
-		maxLen = len(b)
+	ra := []rune(a)
+	rb := []rune(b)
+	d := levenshteinDistance(ra, rb)
+	maxLen := len(ra)
+	if len(rb) > maxLen {
+		maxLen = len(rb)
 	}
 	if maxLen == 0 {
 		return 100
@@ -108,7 +112,7 @@ func levenshteinSimilarity(a, b string) int {
 	return ((maxLen - d) * 100) / maxLen
 }
 
-func levenshteinDistance(a, b string) int {
+func levenshteinDistance(a, b []rune) int {
 	la := len(a)
 	lb := len(b)
 
