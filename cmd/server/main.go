@@ -9,6 +9,7 @@ import (
 	"github.com/nnn/sanctions-service/internal/config"
 	"github.com/nnn/sanctions-service/internal/database"
 	"github.com/nnn/sanctions-service/internal/handler"
+	authmw "github.com/nnn/sanctions-service/internal/middleware"
 )
 
 func main() {
@@ -31,9 +32,13 @@ func main() {
 	r.Use(middleware.SetHeader("Content-Type", "application/json"))
 
 	r.Get("/health", healthH.Health)
-	r.Post("/api/screen", screenH.Screen)
-	r.Get("/api/records", recordsH.List)
-	r.Get("/api/records/{id}", recordsH.Show)
+
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.APIKeyAuth(cfg.APIKey))
+		r.Post("/api/screen", screenH.Screen)
+		r.Get("/api/records", recordsH.List)
+		r.Get("/api/records/{id}", recordsH.Show)
+	})
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("Sanctions service starting on %s", addr)

@@ -7,12 +7,13 @@ import (
 )
 
 type Config struct {
-	DBHost           string
-	DBPort           string
-	DBName           string
-	DBUser           string
-	DBPassword       string
-	ServerPort       string
+	DBHost            string
+	DBPort            string
+	DBName            string
+	DBUser            string
+	DBPassword        string
+	ServerPort        string
+	APIKey            string
 	SanctionsJSONPath string
 }
 
@@ -20,12 +21,13 @@ func Load() *Config {
 	godotenv.Load()
 
 	return &Config{
-		DBHost:           getEnv("DB_HOST", "127.0.0.1"),
-		DBPort:           getEnv("DB_PORT", "3306"),
-		DBName:           getEnv("DB_NAME", "sanctions"),
-		DBUser:           getEnv("DB_USER", "root"),
-		DBPassword:       getEnv("DB_PASSWORD", ""),
-		ServerPort:       getEnv("SERVER_PORT", "8080"),
+		DBHost:            getEnv("DB_HOST", "127.0.0.1"),
+		DBPort:            getEnv("DB_PORT", "3306"),
+		DBName:            getEnv("DB_NAME", "sanctions"),
+		DBUser:            getEnv("DB_USER", "root"),
+		DBPassword:        getEnv("DB_PASSWORD", ""),
+		ServerPort:        getEnv("SERVER_PORT", "8080"),
+		APIKey:            getEnv("API_KEY", ""),
 		SanctionsJSONPath: getEnv("SANCTIONS_JSON_PATH", ""),
 	}
 }
