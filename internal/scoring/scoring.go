@@ -46,7 +46,8 @@ func ScoreName(searchName, candidateName string) int {
 }
 
 // avgBestTokenSimilarity scores how well each source token is represented
-// among the target tokens, using actual Levenshtein similarity values.
+// among the target tokens. Only genuine matches (≥65% similarity) contribute;
+// below that threshold, coincidental character overlap is treated as no match.
 func avgBestTokenSimilarity(sourceTokens, targetTokens []string) int {
 	if len(sourceTokens) == 0 {
 		return 0
@@ -60,7 +61,9 @@ func avgBestTokenSimilarity(sourceTokens, targetTokens []string) int {
 				best = sim
 			}
 		}
-		total += best
+		if best >= 65 {
+			total += best
+		}
 	}
 	return total / len(sourceTokens)
 }
