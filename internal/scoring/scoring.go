@@ -17,21 +17,6 @@ func ScoreName(searchName, candidateName string) int {
 		return 100
 	}
 
-	// Check prefix match
-	if strings.HasPrefix(candidate, search) || strings.HasPrefix(search, candidate) {
-		searchRunes := []rune(search)
-		candidateRunes := []rune(candidate)
-		shorter := len(searchRunes)
-		if len(candidateRunes) < shorter {
-			shorter = len(candidateRunes)
-		}
-		longer := len(searchRunes)
-		if len(candidateRunes) > longer {
-			longer = len(candidateRunes)
-		}
-		return 60 + (40 * shorter / longer)
-	}
-
 	searchTokens := tokenize(search)
 	candidateTokens := tokenize(candidate)
 
@@ -39,16 +24,20 @@ func ScoreName(searchName, candidateName string) int {
 		return 0
 	}
 
-	// Token matching (50% weight)
-	tokenScore := tokenMatchScore(searchTokens, candidateTokens)
+	// Bidirectional token similarity (60% weight)
+	forwardScore := avgBestTokenSimilarity(searchTokens, candidateTokens)
+	reverseScore := avgBestTokenSimilarity(candidateTokens, searchTokens)
+	tokenScore := min(forwardScore, reverseScore)
 
-	// Full string similarity (30% weight)
+	// Full string similarity (20% weight)
 	fullScore := levenshteinSimilarity(search, candidate)
 
-	// Coverage score (20% weight) — prevents "John" matching "John Alexander Muhammad Al-Rashidi" at 95%
-	coverageScore := coverageMatchScore(searchTokens, candidateTokens)
+	// Token count ratio (20% weight) — penalizes mismatched name lengths
+	shorter := min(len(searchTokens), len(candidateTokens))
+	longer := max(len(searchTokens), len(candidateTokens))
+	ratioScore := (shorter * 100) / longer
 
-	total := (tokenScore*50 + fullScore*30 + coverageScore*20) / 100
+	total := (tokenScore*60 + fullScore*20 + ratioScore*20) / 100
 
 	if total > 100 {
 		return 100
@@ -56,46 +45,24 @@ func ScoreName(searchName, candidateName string) int {
 	return total
 }
 
-func tokenMatchScore(searchTokens, candidateTokens []string) int {
-	if len(searchTokens) == 0 {
+// avgBestTokenSimilarity scores how well each source token is represented
+// among the target tokens, using actual Levenshtein similarity values.
+func avgBestTokenSimilarity(sourceTokens, targetTokens []string) int {
+	if len(sourceTokens) == 0 {
 		return 0
 	}
-
-	totalScore := 0
-	for _, st := range searchTokens {
-		bestMatch := 0
-		for _, ct := range candidateTokens {
-			sim := levenshteinSimilarity(st, ct)
-			if sim > bestMatch {
-				bestMatch = sim
+	total := 0
+	for _, st := range sourceTokens {
+		best := 0
+		for _, tt := range targetTokens {
+			sim := levenshteinSimilarity(st, tt)
+			if sim > best {
+				best = sim
 			}
 		}
-		if bestMatch >= 85 {
-			totalScore += 100
-		} else if bestMatch >= 60 {
-			totalScore += 50
-		}
+		total += best
 	}
-
-	return totalScore / len(searchTokens)
-}
-
-func coverageMatchScore(searchTokens, candidateTokens []string) int {
-	if len(candidateTokens) == 0 {
-		return 0
-	}
-
-	covered := 0
-	for _, ct := range candidateTokens {
-		for _, st := range searchTokens {
-			if levenshteinSimilarity(st, ct) >= 70 {
-				covered++
-				break
-			}
-		}
-	}
-
-	return (covered * 100) / len(candidateTokens)
+	return total / len(sourceTokens)
 }
 
 func levenshteinSimilarity(a, b string) int {
