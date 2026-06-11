@@ -101,6 +101,7 @@ type SanctionsCountry struct {
 	RecordID    uint32     `json:"record_id"`
 	CountryType NullString `json:"country_type"`
 	CountryCode NullString `json:"country_code"`
+	CountryName NullString `json:"country_name"`
 }
 
 type SanctionsImage struct {

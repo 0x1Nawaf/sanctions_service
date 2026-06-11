@@ -412,7 +412,12 @@ func (h *ScreenHandler) loadRecordDates(rec *model.SanctionsRecord) {
 }
 
 func (h *ScreenHandler) loadRecordCountries(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query("SELECT id, record_id, country_type, country_code FROM sanctions_countries WHERE record_id = ?", rec.ID)
+	rows, err := h.db.Query(`
+		SELECT sc.id, sc.record_id, sc.country_type, sc.country_code, rc.name
+		FROM sanctions_countries sc
+		LEFT JOIN sanctions_ref_countries rc ON rc.code = sc.country_code
+		WHERE sc.record_id = ?
+	`, rec.ID)
 	if err != nil {
 		return
 	}
@@ -420,7 +425,7 @@ func (h *ScreenHandler) loadRecordCountries(rec *model.SanctionsRecord) {
 
 	for rows.Next() {
 		var c model.SanctionsCountry
-		if err := rows.Scan(&c.ID, &c.RecordID, &c.CountryType, &c.CountryCode); err != nil {
+		if err := rows.Scan(&c.ID, &c.RecordID, &c.CountryType, &c.CountryCode, &c.CountryName); err != nil {
 			continue
 		}
 		rec.Countries = append(rec.Countries, c)
