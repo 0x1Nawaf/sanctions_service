@@ -367,6 +367,8 @@ func (h *ScreenHandler) loadRecords(ids []uint32) ([]model.SanctionsRecord, erro
 		h.loadRecordDates(&records[i])
 		h.loadRecordCountries(&records[i])
 		h.loadRecordImages(&records[i])
+		h.loadRecordDescriptions(&records[i])
+		h.loadRecordAssociations(&records[i])
 	}
 
 	return records, nil
@@ -438,5 +440,53 @@ func (h *ScreenHandler) loadRecordImages(rec *model.SanctionsRecord) {
 			continue
 		}
 		rec.Images = append(rec.Images, img)
+	}
+}
+
+func (h *ScreenHandler) loadRecordDescriptions(rec *model.SanctionsRecord) {
+	rows, err := h.db.Query(`
+		SELECT d1.name, d2.name, d3.name
+		FROM sanctions_descriptions sd
+		LEFT JOIN sanctions_ref_description1 d1 ON d1.description1_id = sd.description1_id
+		LEFT JOIN sanctions_ref_description2 d2 ON d2.description2_id = sd.description2_id
+		LEFT JOIN sanctions_ref_description3 d3 ON d3.description3_id = sd.description3_id
+		WHERE sd.record_id = ?
+	`, rec.ID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var d model.SanctionsDescriptionDetail
+		if err := rows.Scan(&d.Description1, &d.Description2, &d.Description3); err != nil {
+			continue
+		}
+		rec.Descriptions = append(rec.Descriptions, d)
+	}
+}
+
+func (h *ScreenHandler) loadRecordAssociations(rec *model.SanctionsRecord) {
+	rows, err := h.db.Query(`
+		SELECT sa.associate_id,
+		       COALESCE(sn.entity_name, sn.single_string_name, CONCAT_WS(' ', sn.first_name, sn.middle_name, sn.surname), '') AS associate_name,
+		       rr.name,
+		       sa.is_ex
+		FROM sanctions_associations sa
+		LEFT JOIN sanctions_names sn ON sn.record_id = sa.associate_id AND sn.name_type = 'Primary Name'
+		LEFT JOIN sanctions_ref_relationships rr ON rr.code = sa.relationship_code
+		WHERE sa.record_id = ?
+	`, rec.ID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a model.SanctionsAssociationDetail
+		if err := rows.Scan(&a.AssociateID, &a.AssociateName, &a.Relationship, &a.IsEx); err != nil {
+			continue
+		}
+		rec.Associations = append(rec.Associations, a)
 	}
 }

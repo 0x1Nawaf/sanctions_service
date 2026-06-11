@@ -43,10 +43,12 @@ type SanctionsRecord struct {
 	Deceased     NullString `json:"deceased"`
 	ProfileNotes NullString `json:"profile_notes"`
 
-	Names     []SanctionsName    `json:"names,omitempty"`
-	Dates     []SanctionsDate    `json:"dates,omitempty"`
-	Countries []SanctionsCountry `json:"countries,omitempty"`
-	Images    []SanctionsImage   `json:"images,omitempty"`
+	Names        []SanctionsName               `json:"names,omitempty"`
+	Dates        []SanctionsDate               `json:"dates,omitempty"`
+	Countries    []SanctionsCountry            `json:"countries,omitempty"`
+	Images       []SanctionsImage              `json:"images,omitempty"`
+	Descriptions []SanctionsDescriptionDetail  `json:"descriptions,omitempty"`
+	Associations []SanctionsAssociationDetail  `json:"associations,omitempty"`
 }
 
 type SanctionsName struct {
@@ -113,6 +115,19 @@ type SanctionsDescription struct {
 	Description1ID *uint16 `json:"description1_id"`
 	Description2ID *uint16 `json:"description2_id"`
 	Description3ID *uint16 `json:"description3_id"`
+}
+
+type SanctionsDescriptionDetail struct {
+	Description1 NullString `json:"description1"`
+	Description2 NullString `json:"description2"`
+	Description3 NullString `json:"description3"`
+}
+
+type SanctionsAssociationDetail struct {
+	AssociateID      uint32     `json:"associate_id"`
+	AssociateName    string     `json:"associate_name"`
+	Relationship     NullString `json:"relationship"`
+	IsEx             bool       `json:"is_ex"`
 }
 
 type SanctionsRole struct {
