@@ -66,6 +66,20 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		return nil, err
 	}
 
+	// Collect record IDs from initial search hits, then fetch ALL name rows
+	// for those records. A FULLTEXT/LIKE match may only hit one name row per
+	// record, but the best-scoring variant could be on a different row (AKA,
+	// alternate transliteration, etc.).
+	recordIDs := make(map[uint32]bool, len(candidates))
+	for _, c := range candidates {
+		recordIDs[c.recordID] = true
+	}
+	allCandidates, err := h.fetchAllNamesForRecords(recordIDs)
+	if err != nil {
+		return nil, err
+	}
+	candidates = append(candidates, allCandidates...)
+
 	type scored struct {
 		recordID uint32
 		score    int
@@ -305,9 +319,54 @@ func buildNameCandidates(recordID uint32, firstName, middleName, surname, single
 	}
 	if originalScriptName.Valid {
 		add(originalScriptName.String)
+		// Transliterate non-Latin scripts to Latin for cross-script matching
+		if scoring.IsArabic(originalScriptName.String) {
+			add(scoring.TransliterateArabic(originalScriptName.String))
+		}
 	}
 
 	return candidates
+}
+
+// fetchAllNamesForRecords retrieves every name row for the given records and
+// builds candidates from all columns including transliterated Arabic names.
+func (h *ScreenHandler) fetchAllNamesForRecords(recordIDs map[uint32]bool) ([]nameCandidate, error) {
+	if len(recordIDs) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, 0, len(recordIDs))
+	args := make([]interface{}, 0, len(recordIDs))
+	for id := range recordIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT record_id, first_name, middle_name, surname,
+		       single_string_name, entity_name, original_script_name
+		FROM sanctions_names
+		WHERE record_id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := h.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var candidates []nameCandidate
+	for rows.Next() {
+		var recordID uint32
+		var firstName, middleName, surname, singleStringName, entityName, originalScriptName sql.NullString
+		if err := rows.Scan(&recordID, &firstName, &middleName, &surname,
+			&singleStringName, &entityName, &originalScriptName); err != nil {
+			continue
+		}
+		candidates = append(candidates, buildNameCandidates(recordID, firstName, middleName, surname, singleStringName, entityName, originalScriptName)...)
+	}
+
+	return candidates, nil
 }
 
 func (h *ScreenHandler) loadRecords(ids []uint32) ([]model.SanctionsRecord, error) {
