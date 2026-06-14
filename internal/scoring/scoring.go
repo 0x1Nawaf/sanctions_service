@@ -24,7 +24,30 @@ func ScoreName(searchName, candidateName string) int {
 		return 0
 	}
 
-	return computeScore(searchTokens, candidateTokens, search, candidate)
+	// Score with all tokens first (full-string similarity still uses everything).
+	// For token-level comparison, filter out single-character tokens (initials
+	// like "M", "A", "K") â they can never cross the 65% similarity threshold
+	// against real tokens and would drag down the bidirectional average.
+	sigSearchTokens := filterShortTokens(searchTokens)
+	sigCandidateTokens := filterShortTokens(candidateTokens)
+	if len(sigSearchTokens) == 0 || len(sigCandidateTokens) == 0 {
+		// Fall back to all tokens if filtering leaves nothing
+		return computeScore(searchTokens, candidateTokens, search, candidate)
+	}
+
+	return computeScore(sigSearchTokens, sigCandidateTokens, search, candidate)
+}
+
+// filterShortTokens removes tokens with fewer than 2 runes (single-letter
+// initials) that add noise to token-level similarity scoring.
+func filterShortTokens(tokens []string) []string {
+	var result []string
+	for _, t := range tokens {
+		if len([]rune(t)) >= 2 {
+			result = append(result, t)
+		}
+	}
+	return result
 }
 
 func computeScore(searchTokens, candidateTokens []string, searchFull, candidateFull string) int {

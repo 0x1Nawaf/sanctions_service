@@ -21,7 +21,7 @@ func NewScreenHandler(db *sql.DB) *ScreenHandler {
 	return &ScreenHandler{db: db}
 }
 
-var sanitizeRe = regexp.MustCompile(`[+\-><()~*"@]+`)
+var sanitizeRe = regexp.MustCompile(`[+\-><()~*"@.,;:!?']+`)
 
 func (h *ScreenHandler) Screen(w http.ResponseWriter, r *http.Request) {
 	var req model.ScreenRequest
@@ -147,7 +147,15 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 
 func (h *ScreenHandler) fetchCandidates(searchName string) ([]nameCandidate, error) {
 	sanitized := sanitizeRe.ReplaceAllString(searchName, "")
-	tokens := strings.Fields(sanitized)
+	rawTokens := strings.Fields(sanitized)
+	// Drop single-character tokens â they're below FULLTEXT ft_min_token_size
+	// and too noisy for LIKE (e.g. initials "M", "A", "K" match everything).
+	tokens := make([]string, 0, len(rawTokens))
+	for _, t := range rawTokens {
+		if len([]rune(t)) >= 2 {
+			tokens = append(tokens, t)
+		}
+	}
 	if len(tokens) == 0 {
 		return nil, nil
 	}
