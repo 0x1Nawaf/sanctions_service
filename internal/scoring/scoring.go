@@ -63,10 +63,50 @@ func computeScore(searchTokens, candidateTokens []string, searchFull, candidateF
 
 	total := (tokenScore*60 + fullScore*20 + ratioScore*20) / 100
 
+	// Subset boost: when one name is a strong subset of the other (e.g. a
+	// shorter patronymic chain vs the full chain), the bidirectional min +
+	// length penalties are too harsh. If the shorter side's tokens all match
+	// well, lift the score based on how much of the longer side is covered.
+	total = subsetBoost(total, forwardScore, reverseScore,
+		len(searchTokens), len(candidateTokens))
+
 	if total > 100 {
 		return 100
 	}
 	return total
+}
+
+// subsetBoost raises the score when one name is clearly a subset of the other.
+// Forward (searchâcandidate): the user searched with fewer tokens and all were
+// found â strong signal, requires â¥3 search tokens.
+// Reverse (candidateâsearch): the DB record is shorter than the search â weaker
+// signal, requires â¥4 candidate tokens to avoid false positives from very short
+// names like "Nouf Al Saud" matching any longer name containing those tokens.
+func subsetBoost(baseScore, forwardScore, reverseScore, searchLen, candidateLen int) int {
+	best := baseScore
+
+	boost := func(matchScore, subsetLen, supersetLen, minSubsetLen int) int {
+		if matchScore < 90 || subsetLen < minSubsetLen {
+			return 0
+		}
+		coverage := subsetLen * 100 / supersetLen
+		if coverage > 100 {
+			coverage = 100
+		}
+		if coverage < 40 {
+			return 0
+		}
+		return matchScore - (100-coverage)/3
+	}
+
+	if b := boost(forwardScore, searchLen, candidateLen, 3); b > best {
+		best = b
+	}
+	if b := boost(reverseScore, candidateLen, searchLen, 4); b > best {
+		best = b
+	}
+
+	return best
 }
 
 // avgBestTokenSimilarity scores how well each source token is represented
