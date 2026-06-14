@@ -156,20 +156,43 @@ func tokenize(s string) []string {
 // --- Arabic-to-Latin transliteration ---
 
 var arabicMap = map[rune]string{
-	'Ø§': "a", 'Ø£': "a", 'Ø¥': "i", 'Ø¢': "a",
-	'Ø¨': "b", 'Øª': "t", 'Ø«': "th",
-	'Ø¬': "j", 'Ø­': "h", 'Ø®': "kh",
-	'Ø¯': "d", 'Ø°': "dh", 'Ø±': "r", 'Ø²': "z",
-	'Ø³': "s", 'Ø´': "sh",
-	'Øµ': "s", 'Ø¶': "d",
-	'Ø·': "t", 'Ø¸': "dh",
-	'Ø¹': "a", 'Øº': "gh",
-	'Ù': "f", 'Ù': "q", 'Ù': "k",
-	'Ù': "l", 'Ù': "m", 'Ù': "n",
-	'Ù': "h", 'Ù': "u", 'Ù': "i",
-	'Ù': "a", 'Ø©': "a",
-	'Ø¡': "", 'Ø¦': "", 'Ø¤': "u",
-	'\u0640': "", // tatweel
+	'\u0627': "a",  // Ø§ alef
+	'\u0623': "a",  // Ø£ alef hamza above
+	'\u0625': "i",  // Ø¥ alef hamza below
+	'\u0622': "a",  // Ø¢ alef madda
+	'\u0628': "b",  // Ø¨ ba
+	'\u062A': "t",  // Øª ta
+	'\u062B': "th", // Ø« tha
+	'\u062C': "j",  // Ø¬ jeem
+	'\u062D': "h",  // Ø­ ha
+	'\u062E': "kh", // Ø® kha
+	'\u062F': "d",  // Ø¯ dal
+	'\u0630': "dh", // Ø° dhal
+	'\u0631': "r",  // Ø± ra
+	'\u0632': "z",  // Ø² zay
+	'\u0633': "s",  // Ø³ seen
+	'\u0634': "sh", // Ø´ sheen
+	'\u0635': "s",  // Øµ sad
+	'\u0636': "d",  // Ø¶ dad
+	'\u0637': "t",  // Ø· ta
+	'\u0638': "dh", // Ø¸ dha
+	'\u0639': "a",  // Ø¹ ain
+	'\u063A': "gh", // Øº ghain
+	'\u0641': "f",  // Ù fa
+	'\u0642': "q",  // Ù qaf
+	'\u0643': "k",  // Ù kaf
+	'\u0644': "l",  // Ù lam
+	'\u0645': "m",  // Ù meem
+	'\u0646': "n",  // Ù noon
+	'\u0647': "h",  // Ù ha
+	'\u0648': "u",  // Ù waw
+	'\u064A': "i",  // Ù ya
+	'\u0649': "a",  // Ù alef maksura
+	'\u0629': "a",  // Ø© ta marbuta
+	'\u0621': "",   // Ø¡ hamza
+	'\u0626': "",   // Ø¦ ya hamza
+	'\u0624': "u",  // Ø¤ waw hamza
+	'\u0640': "",   // Ù tatweel
 }
 
 var latinVowels = map[rune]bool{
