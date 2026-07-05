@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS custom_lists (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE sanctions_records
+    MODIFY COLUMN id INT UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE sanctions_records
     ADD COLUMN custom_list_id INT UNSIGNED NULL DEFAULT NULL AFTER profile_notes,
     ADD INDEX idx_custom_list_id (custom_list_id),
     ADD CONSTRAINT fk_custom_list FOREIGN KEY (custom_list_id) REFERENCES custom_lists(id) ON DELETE CASCADE;
