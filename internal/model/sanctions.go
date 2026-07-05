@@ -42,6 +42,8 @@ type SanctionsRecord struct {
 	ActiveStatus NullString `json:"active_status"`
 	Deceased     NullString `json:"deceased"`
 	ProfileNotes NullString `json:"profile_notes"`
+	CustomListID *uint32    `json:"custom_list_id,omitempty"`
+	Source       string     `json:"source"`
 
 	Names        []SanctionsName               `json:"names,omitempty"`
 	Dates        []SanctionsDate               `json:"dates,omitempty"`

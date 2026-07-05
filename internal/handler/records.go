@@ -77,8 +77,8 @@ func (h *RecordsHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dataQuery := "SELECT DISTINCT sr.id, sr.record_type, sr.action, sr.action_date, sr.gender, sr.active_status, sr.deceased " +
-		fromClause + " " + whereClause + " ORDER BY sr.id LIMIT ? OFFSET ?"
+	dataQuery := "SELECT DISTINCT sr.id, sr.record_type, sr.action, sr.action_date, sr.gender, sr.active_status, sr.deceased, sr.custom_list_id, COALESCE(cl.name, '') " +
+		fromClause + " LEFT JOIN custom_lists cl ON cl.id = sr.custom_list_id " + whereClause + " ORDER BY sr.id LIMIT ? OFFSET ?"
 	dataArgs := append(args, perPage, offset)
 
 	rows, err := h.db.Query(dataQuery, dataArgs...)
@@ -91,8 +91,17 @@ func (h *RecordsHandler) List(w http.ResponseWriter, r *http.Request) {
 	records := make([]model.SanctionsRecord, 0, perPage)
 	for rows.Next() {
 		var rec model.SanctionsRecord
-		if err := rows.Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate, &rec.Gender, &rec.ActiveStatus, &rec.Deceased); err != nil {
+		var customListID sql.NullInt64
+		var listName string
+		if err := rows.Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate, &rec.Gender, &rec.ActiveStatus, &rec.Deceased, &customListID, &listName); err != nil {
 			continue
+		}
+		if customListID.Valid {
+			clID := uint32(customListID.Int64)
+			rec.CustomListID = &clID
+			rec.Source = "custom_list:" + listName
+		} else {
+			rec.Source = "sanctions_list"
 		}
 		h.loadPrimaryName(&rec)
 		records = append(records, rec)
@@ -115,10 +124,15 @@ func (h *RecordsHandler) Show(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var rec model.SanctionsRecord
+	var customListID sql.NullInt64
+	var listName string
 	err = h.db.QueryRow(`
-		SELECT id, record_type, action, action_date, gender, active_status, deceased, profile_notes
-		FROM sanctions_records WHERE id = ?
-	`, id).Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate, &rec.Gender, &rec.ActiveStatus, &rec.Deceased, &rec.ProfileNotes)
+		SELECT sr.id, sr.record_type, sr.action, sr.action_date, sr.gender, sr.active_status,
+		       sr.deceased, sr.profile_notes, sr.custom_list_id, COALESCE(cl.name, '')
+		FROM sanctions_records sr
+		LEFT JOIN custom_lists cl ON cl.id = sr.custom_list_id
+		WHERE sr.id = ?
+	`, id).Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate, &rec.Gender, &rec.ActiveStatus, &rec.Deceased, &rec.ProfileNotes, &customListID, &listName)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "record not found")
 		return
@@ -126,6 +140,13 @@ func (h *RecordsHandler) Show(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+	if customListID.Valid {
+		clID := uint32(customListID.Int64)
+		rec.CustomListID = &clID
+		rec.Source = "custom_list:" + listName
+	} else {
+		rec.Source = "sanctions_list"
 	}
 
 	h.loadNames(&rec)

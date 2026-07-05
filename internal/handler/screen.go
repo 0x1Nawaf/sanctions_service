@@ -413,9 +413,12 @@ func (h *ScreenHandler) loadRecords(ids []uint32) ([]model.SanctionsRecord, erro
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, record_type, action, action_date, gender, active_status, deceased, profile_notes
-		FROM sanctions_records
-		WHERE id IN (%s)
+		SELECT sr.id, sr.record_type, sr.action, sr.action_date, sr.gender,
+		       sr.active_status, sr.deceased, sr.profile_notes,
+		       sr.custom_list_id, COALESCE(cl.name, '')
+		FROM sanctions_records sr
+		LEFT JOIN custom_lists cl ON cl.id = sr.custom_list_id
+		WHERE sr.id IN (%s)
 	`, strings.Join(placeholders, ","))
 
 	rows, err := h.db.Query(query, args...)
@@ -427,8 +430,19 @@ func (h *ScreenHandler) loadRecords(ids []uint32) ([]model.SanctionsRecord, erro
 	records := make([]model.SanctionsRecord, 0, len(ids))
 	for rows.Next() {
 		var rec model.SanctionsRecord
-		if err := rows.Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate, &rec.Gender, &rec.ActiveStatus, &rec.Deceased, &rec.ProfileNotes); err != nil {
+		var customListID sql.NullInt64
+		var listName string
+		if err := rows.Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate,
+			&rec.Gender, &rec.ActiveStatus, &rec.Deceased, &rec.ProfileNotes,
+			&customListID, &listName); err != nil {
 			continue
+		}
+		if customListID.Valid {
+			clID := uint32(customListID.Int64)
+			rec.CustomListID = &clID
+			rec.Source = "custom_list:" + listName
+		} else {
+			rec.Source = "sanctions_list"
 		}
 		records = append(records, rec)
 	}
