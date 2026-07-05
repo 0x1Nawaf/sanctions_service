@@ -25,6 +25,7 @@ func main() {
 	healthH := handler.NewHealthHandler(db)
 	recordsH := handler.NewRecordsHandler(db)
 	screenH := handler.NewScreenHandler(db)
+	customListH := handler.NewCustomListHandler(db)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -38,6 +39,7 @@ func main() {
 		r.Post("/api/screen", screenH.Screen)
 		r.Get("/api/records", recordsH.List)
 		r.Get("/api/records/{id}", recordsH.Show)
+		r.Post("/api/custom-lists", customListH.Upload)
 	})
 
 	addr := ":" + cfg.ServerPort

@@ -221,3 +221,40 @@ type PaginatedResponse struct {
 	Total   int         `json:"total"`
 	Data    interface{} `json:"data"`
 }
+
+// Custom list upload types
+
+type CustomListEntry struct {
+	RecordType   string `json:"record_type"`
+	Gender       string `json:"gender,omitempty"`
+	FirstName    string `json:"first_name,omitempty"`
+	MiddleName   string `json:"middle_name,omitempty"`
+	Surname      string `json:"surname,omitempty"`
+	EntityName   string `json:"entity_name,omitempty"`
+	DateOfBirth  string `json:"date_of_birth,omitempty"`
+	Nationality  string `json:"nationality,omitempty"`
+	IDType       string `json:"id_type,omitempty"`
+	IDValue      string `json:"id_value,omitempty"`
+	Notes        string `json:"notes,omitempty"`
+	Aliases      []CustomListAlias `json:"aliases,omitempty"`
+}
+
+type CustomListAlias struct {
+	FirstName  string `json:"first_name,omitempty"`
+	MiddleName string `json:"middle_name,omitempty"`
+	Surname    string `json:"surname,omitempty"`
+	EntityName string `json:"entity_name,omitempty"`
+}
+
+type CustomListUploadRequest struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Entries     []CustomListEntry `json:"entries"`
+}
+
+type CustomListUploadResponse struct {
+	ListID       uint32 `json:"list_id"`
+	Name         string `json:"name"`
+	EntriesAdded int    `json:"entries_added"`
+	Message      string `json:"message"`
+}

@@ -128,7 +128,7 @@ func ScoreName(searchName, candidateName string) int {
 
 	// Score with all tokens first (full-string similarity still uses everything).
 	// For token-level comparison, filter out single-character tokens (initials
-	// like "M", "A", "K") Ã¢ÂÂ they can never cross the 65% similarity threshold
+	// like "M", "A", "K") â they can never cross the 65% similarity threshold
 	// against real tokens and would drag down the bidirectional average.
 	sigSearchTokens := filterShortTokens(searchTokens)
 	sigCandidateTokens := filterShortTokens(candidateTokens)
@@ -179,10 +179,10 @@ func computeScore(searchTokens, candidateTokens []string, searchFull, candidateF
 }
 
 // subsetBoost raises the score when one name is clearly a subset of the other.
-// Forward (searchÃ¢ÂÂcandidate): the user searched with fewer tokens and all were
-// found Ã¢ÂÂ strong signal, requires Ã¢ÂÂ¥3 search tokens.
-// Reverse (candidateÃ¢ÂÂsearch): the DB record is shorter than the search Ã¢ÂÂ weaker
-// signal, requires Ã¢ÂÂ¥4 candidate tokens to avoid false positives from very short
+// Forward (searchâcandidate): the user searched with fewer tokens and all were
+// found â strong signal, requires â¥3 search tokens.
+// Reverse (candidateâsearch): the DB record is shorter than the search â weaker
+// signal, requires â¥4 candidate tokens to avoid false positives from very short
 // names like "Nouf Al Saud" matching any longer name containing those tokens.
 func subsetBoost(baseScore, forwardScore, reverseScore, searchLen, candidateLen int) int {
 	best := baseScore
@@ -212,7 +212,7 @@ func subsetBoost(baseScore, forwardScore, reverseScore, searchLen, candidateLen 
 }
 
 // avgBestTokenSimilarity scores how well each source token is represented
-// among the target tokens. Only genuine matches (Ã¢ÂÂ¥65% similarity) contribute;
+// among the target tokens. Only genuine matches (â¥65% similarity) contribute;
 // below that threshold, coincidental character overlap is treated as no match.
 func avgBestTokenSimilarity(sourceTokens, targetTokens []string) int {
 	if len(sourceTokens) == 0 {
@@ -321,43 +321,43 @@ func tokenize(s string) []string {
 // --- Arabic-to-Latin transliteration ---
 
 var arabicMap = map[rune]string{
-	'\u0627': "a",  // ÃÂ§ alef
-	'\u0623': "a",  // ÃÂ£ alef hamza above
-	'\u0625': "i",  // ÃÂ¥ alef hamza below
-	'\u0622': "a",  // ÃÂ¢ alef madda
-	'\u0628': "b",  // ÃÂ¨ ba
-	'\u062A': "t",  // ÃÂª ta
-	'\u062B': "th", // ÃÂ« tha
-	'\u062C': "j",  // ÃÂ¬ jeem
-	'\u062D': "h",  // ÃÂ­ ha
-	'\u062E': "kh", // ÃÂ® kha
-	'\u062F': "d",  // ÃÂ¯ dal
-	'\u0630': "dh", // ÃÂ° dhal
-	'\u0631': "r",  // ÃÂ± ra
-	'\u0632': "z",  // ÃÂ² zay
-	'\u0633': "s",  // ÃÂ³ seen
-	'\u0634': "sh", // ÃÂ´ sheen
-	'\u0635': "s",  // ÃÂµ sad
-	'\u0636': "d",  // ÃÂ¶ dad
-	'\u0637': "t",  // ÃÂ· ta
-	'\u0638': "dh", // ÃÂ¸ dha
-	'\u0639': "a",  // ÃÂ¹ ain
-	'\u063A': "gh", // ÃÂº ghain
-	'\u0641': "f",  // ÃÂ fa
-	'\u0642': "q",  // ÃÂ qaf
-	'\u0643': "k",  // ÃÂ kaf
-	'\u0644': "l",  // ÃÂ lam
-	'\u0645': "m",  // ÃÂ meem
-	'\u0646': "n",  // ÃÂ noon
-	'\u0647': "h",  // ÃÂ ha
-	'\u0648': "u",  // ÃÂ waw
-	'\u064A': "i",  // ÃÂ ya
-	'\u0649': "a",  // ÃÂ alef maksura
-	'\u0629': "a",  // ÃÂ© ta marbuta
-	'\u0621': "",   // ÃÂ¡ hamza
-	'\u0626': "",   // ÃÂ¦ ya hamza
-	'\u0624': "u",  // ÃÂ¤ waw hamza
-	'\u0640': "",   // ÃÂ tatweel
+	'\u0627': "a",  // Ø§ alef
+	'\u0623': "a",  // Ø£ alef hamza above
+	'\u0625': "i",  // Ø¥ alef hamza below
+	'\u0622': "a",  // Ø¢ alef madda
+	'\u0628': "b",  // Ø¨ ba
+	'\u062A': "t",  // Øª ta
+	'\u062B': "th", // Ø« tha
+	'\u062C': "j",  // Ø¬ jeem
+	'\u062D': "h",  // Ø­ ha
+	'\u062E': "kh", // Ø® kha
+	'\u062F': "d",  // Ø¯ dal
+	'\u0630': "dh", // Ø° dhal
+	'\u0631': "r",  // Ø± ra
+	'\u0632': "z",  // Ø² zay
+	'\u0633': "s",  // Ø³ seen
+	'\u0634': "sh", // Ø´ sheen
+	'\u0635': "s",  // Øµ sad
+	'\u0636': "d",  // Ø¶ dad
+	'\u0637': "t",  // Ø· ta
+	'\u0638': "dh", // Ø¸ dha
+	'\u0639': "a",  // Ø¹ ain
+	'\u063A': "gh", // Øº ghain
+	'\u0641': "f",  // Ù fa
+	'\u0642': "q",  // Ù qaf
+	'\u0643': "k",  // Ù kaf
+	'\u0644': "l",  // Ù lam
+	'\u0645': "m",  // Ù meem
+	'\u0646': "n",  // Ù noon
+	'\u0647': "h",  // Ù ha
+	'\u0648': "u",  // Ù waw
+	'\u064A': "i",  // Ù ya
+	'\u0649': "a",  // Ù alef maksura
+	'\u0629': "a",  // Ø© ta marbuta
+	'\u0621': "",   // Ø¡ hamza
+	'\u0626': "",   // Ø¦ ya hamza
+	'\u0624': "u",  // Ø¤ waw hamza
+	'\u0640': "",   // Ù tatweel
 }
 
 var latinVowels = map[rune]bool{
@@ -377,7 +377,7 @@ func IsArabic(s string) bool {
 // TransliterateArabic converts Arabic script to a Latin approximation.
 // The result is lowercase with spaces preserved. Diacritics are stripped and
 // a short 'a' vowel is inserted between consecutive consonants to approximate
-// common English spellings of Arabic names (e.g. ÃÂÃÂÃÂ¯ Ã¢ÂÂ "fahd").
+// common English spellings of Arabic names (e.g. ÙÙØ¯ â "fahd").
 func TransliterateArabic(s string) string {
 	if !IsArabic(s) {
 		return s
@@ -413,7 +413,7 @@ func TransliterateArabic(s string) string {
 
 // insertVowels adds a short 'a' between consonant pairs where no vowel
 // precedes the first consonant, approximating common Arabic name romanization.
-// e.g. "fhd" Ã¢ÂÂ "fahd", "rshad" Ã¢ÂÂ "rashad", "alhrbi" Ã¢ÂÂ "alharbi"
+// e.g. "fhd" â "fahd", "rshad" â "rashad", "alhrbi" â "alharbi"
 func insertVowels(s string) string {
 	runes := []rune(s)
 	if len(runes) == 0 {
@@ -427,7 +427,7 @@ func insertVowels(s string) string {
 		if unicode.IsSpace(r) || latinVowels[r] || !unicode.IsLetter(r) {
 			continue
 		}
-		// r is a consonant Ã¢ÂÂ decide whether to insert 'a' after it
+		// r is a consonant â decide whether to insert 'a' after it
 		if i+1 >= len(runes) {
 			continue
 		}
@@ -450,7 +450,7 @@ func insertVowels(s string) string {
 }
 
 func isDigraphPair(first, second rune) bool {
-	// Common ArabicÃ¢ÂÂLatin digraphs where inserting a vowel would be wrong:
+	// Common ArabicâLatin digraphs where inserting a vowel would be wrong:
 	// kh, sh, th, dh, gh
 	switch first {
 	case 'k', 's', 't', 'd', 'g':

@@ -153,7 +153,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCandidate, error) {
 	sanitized := sanitizeRe.ReplaceAllString(searchName, "")
 	rawTokens := strings.Fields(sanitized)
-	// Drop single-character tokens Ã¢ÂÂ they're below FULLTEXT ft_min_token_size
+	// Drop single-character tokens â they're below FULLTEXT ft_min_token_size
 	// and too noisy for LIKE (e.g. initials "M", "A", "K" match everything).
 	tokens := make([]string, 0, len(rawTokens))
 	for _, t := range rawTokens {
@@ -330,7 +330,7 @@ func buildNameCandidates(recordID uint32, firstName, middleName, surname, single
 		add(entityName.String)
 	}
 
-	// Structured name (first + middle + surname) Ã¢ÂÂ the most complete representation
+	// Structured name (first + middle + surname) â the most complete representation
 	var parts []string
 	if firstName.Valid && firstName.String != "" {
 		parts = append(parts, firstName.String)
