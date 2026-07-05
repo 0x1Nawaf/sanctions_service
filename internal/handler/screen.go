@@ -61,7 +61,7 @@ type nameCandidate struct {
 }
 
 func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.ScreenResult, error) {
-	candidates, err := h.fetchCandidates(req.Name)
+	candidates, err := h.fetchCandidates(req.Name, req.SearchType)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,12 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 
 	bestByRecord := make(map[uint32]scored)
 	for _, c := range candidates {
-		s := scoring.ScoreName(req.Name, c.name)
+		var s int
+		if req.SearchType == "entity" {
+			s = scoring.ScoreEntityName(req.Name, c.name)
+		} else {
+			s = scoring.ScoreName(req.Name, c.name)
+		}
 		if s < req.MinScore {
 			continue
 		}
@@ -145,10 +150,10 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 	return results, nil
 }
 
-func (h *ScreenHandler) fetchCandidates(searchName string) ([]nameCandidate, error) {
+func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCandidate, error) {
 	sanitized := sanitizeRe.ReplaceAllString(searchName, "")
 	rawTokens := strings.Fields(sanitized)
-	// Drop single-character tokens â they're below FULLTEXT ft_min_token_size
+	// Drop single-character tokens Ã¢ÂÂ they're below FULLTEXT ft_min_token_size
 	// and too noisy for LIKE (e.g. initials "M", "A", "K" match everything).
 	tokens := make([]string, 0, len(rawTokens))
 	for _, t := range rawTokens {
@@ -160,13 +165,13 @@ func (h *ScreenHandler) fetchCandidates(searchName string) ([]nameCandidate, err
 		return nil, nil
 	}
 
-	candidates, err := h.fetchFulltextCandidates(tokens)
+	candidates, err := h.fetchFulltextCandidates(tokens, searchType)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(candidates) == 0 {
-		candidates, err = h.fetchLikeCandidates(tokens)
+		candidates, err = h.fetchLikeCandidates(tokens, searchType)
 		if err != nil {
 			return nil, err
 		}
@@ -175,7 +180,7 @@ func (h *ScreenHandler) fetchCandidates(searchName string) ([]nameCandidate, err
 	return candidates, nil
 }
 
-func (h *ScreenHandler) fetchFulltextCandidates(tokens []string) ([]nameCandidate, error) {
+func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
 	required := (len(tokens) + 1) / 2
 	ftTerms := make([]string, len(tokens))
 	for i, t := range tokens {
@@ -187,7 +192,16 @@ func (h *ScreenHandler) fetchFulltextCandidates(tokens []string) ([]nameCandidat
 	}
 	ftQuery := strings.Join(ftTerms, " ")
 
-	query := `
+	typeFilter := ""
+	var args []interface{}
+	args = append(args, ftQuery, ftQuery)
+	if searchType == "entity" {
+		typeFilter = "AND sr.record_type = 'Entity'"
+	} else if searchType == "individual" {
+		typeFilter = "AND sr.record_type = 'Individual'"
+	}
+
+	query := fmt.Sprintf(`
 		SELECT sn.record_id,
 		       sn.first_name, sn.middle_name, sn.surname,
 		       sn.single_string_name, sn.entity_name, sn.original_script_name,
@@ -195,12 +209,13 @@ func (h *ScreenHandler) fetchFulltextCandidates(tokens []string) ([]nameCandidat
 		FROM sanctions_names sn
 		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
 		WHERE sr.active_status = 'Active'
+		  %s
 		  AND MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN BOOLEAN MODE)
 		ORDER BY relevance DESC
 		LIMIT 300
-	`
+	`, typeFilter)
 
-	rows, err := h.db.Query(query, ftQuery, ftQuery)
+	rows, err := h.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("fulltext query: %w", err)
 	}
@@ -221,7 +236,7 @@ func (h *ScreenHandler) fetchFulltextCandidates(tokens []string) ([]nameCandidat
 	return candidates, nil
 }
 
-func (h *ScreenHandler) fetchLikeCandidates(tokens []string) ([]nameCandidate, error) {
+func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
 	var conditions []string
 	var args []interface{}
 
@@ -245,6 +260,13 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string) ([]nameCandidate, e
 			strings.Join(wrapConditions(conditions), " + "), required)
 	}
 
+	typeFilter := ""
+	if searchType == "entity" {
+		typeFilter = "AND sr.record_type = 'Entity'"
+	} else if searchType == "individual" {
+		typeFilter = "AND sr.record_type = 'Individual'"
+	}
+
 	query := fmt.Sprintf(`
 		SELECT sn.record_id,
 		       sn.first_name, sn.middle_name, sn.surname,
@@ -252,9 +274,10 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string) ([]nameCandidate, e
 		FROM sanctions_names sn
 		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
 		WHERE sr.active_status = 'Active'
+		  %s
 		  AND %s
 		LIMIT 300
-	`, whereClause)
+	`, typeFilter, whereClause)
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -307,7 +330,7 @@ func buildNameCandidates(recordID uint32, firstName, middleName, surname, single
 		add(entityName.String)
 	}
 
-	// Structured name (first + middle + surname) â the most complete representation
+	// Structured name (first + middle + surname) Ã¢ÂÂ the most complete representation
 	var parts []string
 	if firstName.Valid && firstName.String != "" {
 		parts = append(parts, firstName.String)
