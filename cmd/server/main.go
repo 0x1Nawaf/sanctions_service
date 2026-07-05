@@ -40,6 +40,8 @@ func main() {
 		r.Get("/api/records", recordsH.List)
 		r.Get("/api/records/{id}", recordsH.Show)
 		r.Post("/api/custom-lists", customListH.Upload)
+		r.Get("/api/custom-lists", customListH.List)
+		r.Delete("/api/custom-lists/{id}", customListH.Delete)
 	})
 
 	addr := ":" + cfg.ServerPort

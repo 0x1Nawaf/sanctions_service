@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/nnn/sanctions-service/internal/model"
 )
 
@@ -144,4 +146,66 @@ func nullIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+func (h *CustomListHandler) List(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.db.Query(`
+		SELECT cl.id, cl.name, COALESCE(cl.description, ''), cl.created_at, cl.updated_at,
+		       COUNT(sr.id) AS entry_count
+		FROM custom_lists cl
+		LEFT JOIN sanctions_records sr ON sr.custom_list_id = cl.id
+		GROUP BY cl.id
+		ORDER BY cl.created_at DESC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	lists := make([]model.CustomListSummary, 0)
+	for rows.Next() {
+		var item model.CustomListSummary
+		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.CreatedAt, &item.UpdatedAt, &item.EntryCount); err != nil {
+			continue
+		}
+		lists = append(lists, item)
+	}
+
+	writeJSON(w, lists)
+}
+
+func (h *CustomListHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid list id")
+		return
+	}
+
+	var exists bool
+	h.db.QueryRow("SELECT EXISTS(SELECT 1 FROM custom_lists WHERE id = ?)", id).Scan(&exists)
+	if !exists {
+		writeError(w, http.StatusNotFound, "list not found")
+		return
+	}
+
+	tx, err := h.db.Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	tx.Exec("DELETE FROM sanctions_records WHERE custom_list_id = ?", id)
+	tx.Exec("DELETE FROM custom_lists WHERE id = ?", id)
+
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete list")
+		return
+	}
+
+	writeJSON(w, model.CustomListDeleteResponse{
+		Message: "list deleted successfully",
+	})
 }

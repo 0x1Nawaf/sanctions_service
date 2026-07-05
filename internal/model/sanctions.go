@@ -258,3 +258,16 @@ type CustomListUploadResponse struct {
 	EntriesAdded int    `json:"entries_added"`
 	Message      string `json:"message"`
 }
+
+type CustomListSummary struct {
+	ID          uint32 `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	EntryCount  int    `json:"entry_count"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+type CustomListDeleteResponse struct {
+	Message string `json:"message"`
+}
