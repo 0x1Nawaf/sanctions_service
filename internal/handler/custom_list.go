@@ -54,12 +54,17 @@ func (h *CustomListHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range req.Entries {
 		recordType := entry.RecordType
 		if recordType == "" {
-			recordType = "individual"
+			recordType = "Individual"
+		}
+		if strings.EqualFold(recordType, "entity") {
+			recordType = "Entity"
+		} else {
+			recordType = "Individual"
 		}
 
 		recRes, err := tx.Exec(`
 			INSERT INTO sanctions_records (record_type, gender, active_status, profile_notes, custom_list_id)
-			VALUES (?, ?, 'active', ?, ?)`,
+			VALUES (?, ?, 'Active', ?, ?)`,
 			recordType,
 			nullIfEmpty(entry.Gender),
 			nullIfEmpty(entry.Notes),
