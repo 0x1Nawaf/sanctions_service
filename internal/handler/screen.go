@@ -165,27 +165,15 @@ func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCa
 		return nil, nil
 	}
 
-	// Run both FULLTEXT and LIKE searches and merge results to ensure we
-	// catch all records regardless of FULLTEXT index state.
 	candidates, err := h.fetchFulltextCandidates(tokens, searchType)
 	if err != nil {
 		return nil, err
 	}
 
-	likeCandidates, err := h.fetchLikeCandidates(tokens, searchType)
-	if err != nil {
-		return nil, err
-	}
-
-	// Merge: add LIKE candidates that FULLTEXT didn't already find
-	seen := make(map[uint32]bool, len(candidates))
-	for _, c := range candidates {
-		seen[c.recordID] = true
-	}
-	for _, c := range likeCandidates {
-		if !seen[c.recordID] {
-			candidates = append(candidates, c)
-			seen[c.recordID] = true
+	if len(candidates) == 0 {
+		candidates, err = h.fetchLikeCandidates(tokens, searchType)
+		if err != nil {
+			return nil, err
 		}
 	}
 
