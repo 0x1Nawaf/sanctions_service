@@ -210,7 +210,7 @@ func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType stri
 	if searchType == "entity" {
 		typeFilter = "AND sr.record_type = 'Entity'"
 	} else if searchType == "individual" {
-		typeFilter = "AND sr.record_type = 'Individual'"
+		typeFilter = "AND sr.record_type IN ('Individual', 'Person')"
 	}
 
 	query := fmt.Sprintf(`
@@ -276,7 +276,7 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) 
 	if searchType == "entity" {
 		typeFilter = "AND sr.record_type = 'Entity'"
 	} else if searchType == "individual" {
-		typeFilter = "AND sr.record_type = 'Individual'"
+		typeFilter = "AND sr.record_type IN ('Individual', 'Person')"
 	}
 
 	query := fmt.Sprintf(`
