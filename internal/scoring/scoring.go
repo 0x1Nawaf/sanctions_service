@@ -163,14 +163,12 @@ func computeScore(searchTokens, candidateTokens []string, searchFull, candidateF
 	longer := max(len(searchTokens), len(candidateTokens))
 	ratioScore := (shorter * 100) / longer
 
-	total := (tokenScore*60 + fullScore*20 + ratioScore*20) / 100
+	total := (tokenScore*70 + fullScore*20 + ratioScore*10) / 100
 
-	// Subset boost: when one name is a strong subset of the other (e.g. a
-	// shorter patronymic chain vs the full chain), the bidirectional min +
-	// length penalties are too harsh. If the shorter side's tokens all match
-	// well, lift the score based on how much of the longer side is covered.
 	total = subsetBoost(total, forwardScore, reverseScore,
 		len(searchTokens), len(candidateTokens))
+
+	total = surnamePenalty(total, searchTokens, candidateTokens)
 
 	if total > 100 {
 		return 100
@@ -179,36 +177,63 @@ func computeScore(searchTokens, candidateTokens []string, searchFull, candidateF
 }
 
 // subsetBoost raises the score when one name is clearly a subset of the other.
-// Forward (searchâcandidate): the user searched with fewer tokens and all were
-// found â strong signal, requires â¥3 search tokens.
-// Reverse (candidateâsearch): the DB record is shorter than the search â weaker
-// signal, requires â¥4 candidate tokens to avoid false positives from very short
-// names like "Nouf Al Saud" matching any longer name containing those tokens.
+// For short subsets (2-3 tokens) a higher coverage threshold (>60%) is required
+// to avoid boosting common-name overlaps like "Mohammed Hassan Ali" matching any
+// longer name that happens to contain those three frequent tokens.
 func subsetBoost(baseScore, forwardScore, reverseScore, searchLen, candidateLen int) int {
 	best := baseScore
 
-	boost := func(matchScore, subsetLen, supersetLen, minSubsetLen int) int {
-		if matchScore < 90 || subsetLen < minSubsetLen {
+	boost := func(matchScore, subsetLen, supersetLen int) int {
+		if matchScore < 90 || subsetLen < 2 {
 			return 0
 		}
 		coverage := subsetLen * 100 / supersetLen
 		if coverage > 100 {
 			coverage = 100
 		}
-		if coverage < 50 {
+		minCoverage := 50
+		if subsetLen < 4 {
+			minCoverage = 61
+		}
+		if coverage < minCoverage {
 			return 0
 		}
 		return matchScore - (100-coverage)/2
 	}
 
-	if b := boost(forwardScore, searchLen, candidateLen, 4); b > best {
+	if b := boost(forwardScore, searchLen, candidateLen); b > best {
 		best = b
 	}
-	if b := boost(reverseScore, candidateLen, searchLen, 4); b > best {
+	if b := boost(reverseScore, candidateLen, searchLen); b > best {
 		best = b
 	}
 
 	return best
+}
+
+// surnamePenalty reduces the score when the last token of the search (typically
+// the family/surname in Arabic names) has no good match among the candidate
+// tokens. This is the strongest signal for false positives: "Nouf Alkahtani"
+// should not match "Nouf Al-Sowaidi" just because they share a first name.
+func surnamePenalty(score int, searchTokens, candidateTokens []string) int {
+	if len(searchTokens) < 2 {
+		return score
+	}
+	lastToken := searchTokens[len(searchTokens)-1]
+	if len([]rune(lastToken)) < 3 {
+		return score
+	}
+	bestMatch := 0
+	for _, ct := range candidateTokens {
+		sim := levenshteinSimilarity(lastToken, ct)
+		if sim > bestMatch {
+			bestMatch = sim
+		}
+	}
+	if bestMatch < 65 {
+		return score * 65 / 100
+	}
+	return score
 }
 
 // avgBestTokenSimilarity scores how well each source token is represented

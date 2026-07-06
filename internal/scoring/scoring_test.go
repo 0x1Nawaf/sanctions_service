@@ -63,6 +63,95 @@ func TestSubsetBoostFix(t *testing.T) {
 	}
 }
 
+func TestFalsePositiveReduction(t *testing.T) {
+	tests := []struct {
+		name      string
+		search    string
+		candidate string
+		minScore  int
+		maxScore  int
+	}{
+		{
+			name:      "true positive - surname matches with extra middle names",
+			search:    "Nouf Alkahtani",
+			candidate: "Nouf Mohammed M. Alkahtani",
+			minScore:  70,
+			maxScore:  100,
+		},
+		{
+			name:      "false positive - same first name different surname",
+			search:    "Nouf Alkahtani",
+			candidate: "Nouf Al-Sowaidi",
+			minScore:  0,
+			maxScore:  45,
+		},
+		{
+			name:      "false positive - same first name unrelated surname",
+			search:    "Nouf Alkahtani",
+			candidate: "Nouf M. A. M. K. Al Shibani",
+			minScore:  0,
+			maxScore:  45,
+		},
+		{
+			name:      "false positive - similar first name different surname",
+			search:    "Nouf Alkahtani",
+			candidate: "Noof Al Hammadi",
+			minScore:  0,
+			maxScore:  45,
+		},
+		{
+			name:      "partial name match - truncated surname in longer patronymic",
+			search:    "Muhammed Al Shurf",
+			candidate: "Muhammed Ali Muhammed Al Shurafa Al Hammadi",
+			minScore:  55,
+			maxScore:  100,
+		},
+		{
+			name:      "true positive - 2-token subset of 3-token name",
+			search:    "Ahmed Alharbi",
+			candidate: "Ahmed Mohammed Alharbi",
+			minScore:  70,
+			maxScore:  100,
+		},
+		{
+			name:      "false positive - first name only overlap",
+			search:    "Ahmed Alharbi",
+			candidate: "Ahmed Al-Sowaidi",
+			minScore:  0,
+			maxScore:  45,
+		},
+		{
+			name:      "true positive - spelling variant of surname",
+			search:    "Fahad Al Otaibi",
+			candidate: "Fahd Al Otaibi",
+			minScore:  75,
+			maxScore:  100,
+		},
+		{
+			name:      "false positive - same tribe prefix different name",
+			search:    "Fahad Al Otaibi",
+			candidate: "Fahad Al Dosari",
+			minScore:  0,
+			maxScore:  50,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := ScoreName(tt.search, tt.candidate)
+			if score > tt.maxScore {
+				t.Errorf("ScoreName(%q, %q) = %d, want <= %d",
+					tt.search, tt.candidate, score, tt.maxScore)
+			}
+			if score < tt.minScore {
+				t.Errorf("ScoreName(%q, %q) = %d, want >= %d",
+					tt.search, tt.candidate, score, tt.minScore)
+			}
+			t.Logf("ScoreName(%q, %q) = %d", tt.search, tt.candidate, score)
+		})
+	}
+}
+
 func TestScoreEntityName(t *testing.T) {
 	tests := []struct {
 		name      string
