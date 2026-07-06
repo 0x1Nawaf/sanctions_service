@@ -134,6 +134,20 @@ func TestFalsePositiveReduction(t *testing.T) {
 			minScore:  0,
 			maxScore:  50,
 		},
+		{
+			name:      "true positive - long patronymic chain with Bin/Bint connectors",
+			search:    "NOUF FAHAD KHALID AL SAUD",
+			candidate: "Princess Nouf Bint Fahd Bin Khalid Bin Muhammad Bin Abdul Rahman Al Saud",
+			minScore:  70,
+			maxScore:  100,
+		},
+		{
+			name:      "true positive - name with bin connectors should still match",
+			search:    "Osama Bin Laden",
+			candidate: "Usama Bin Muhammad Bin Awad Bin Laden",
+			minScore:  55,
+			maxScore:  100,
+		},
 	}
 
 	for _, tt := range tests {

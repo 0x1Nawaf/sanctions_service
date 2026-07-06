@@ -126,18 +126,52 @@ func ScoreName(searchName, candidateName string) int {
 		return 0
 	}
 
-	// Score with all tokens first (full-string similarity still uses everything).
-	// For token-level comparison, filter out single-character tokens (initials
-	// like "M", "A", "K") â they can never cross the 65% similarity threshold
-	// against real tokens and would drag down the bidirectional average.
 	sigSearchTokens := filterShortTokens(searchTokens)
 	sigCandidateTokens := filterShortTokens(candidateTokens)
 	if len(sigSearchTokens) == 0 || len(sigCandidateTokens) == 0 {
-		// Fall back to all tokens if filtering leaves nothing
 		return computeScore(searchTokens, candidateTokens, search, candidate)
 	}
 
-	return computeScore(sigSearchTokens, sigCandidateTokens, search, candidate)
+	baseScore := computeScore(sigSearchTokens, sigCandidateTokens, search, candidate)
+
+	filtSearch := filterNameNoise(sigSearchTokens)
+	filtCandidate := filterNameNoise(sigCandidateTokens)
+	if len(filtSearch) != len(sigSearchTokens) || len(filtCandidate) != len(sigCandidateTokens) {
+		filteredScore := computeScore(filtSearch, filtCandidate, search, candidate)
+		if filteredScore > baseScore {
+			return filteredScore
+		}
+	}
+
+	return baseScore
+}
+
+// nameNoiseWords are patronymic connectors (bin/bint/ibn) and honorific titles
+// that appear in formal Arabic name records but carry no distinguishing value.
+// Filtering them from token scoring prevents long patronymic chains from
+// dragging down the bidirectional match score.
+var nameNoiseWords = map[string]bool{
+	"bin": true, "bint": true, "ibn": true, "ben": true,
+	"princess": true, "prince": true,
+	"sheikh": true, "shaikh": true, "shaykh": true,
+	"king": true, "queen": true,
+	"dr": true, "mr": true, "mrs": true, "ms": true,
+}
+
+// filterNameNoise removes patronymic connectors and titles from tokens.
+// Returns the original slice if filtering would leave fewer than 2 tokens,
+// to avoid degrading scoring for names like "Bin Laden".
+func filterNameNoise(tokens []string) []string {
+	var result []string
+	for _, t := range tokens {
+		if !nameNoiseWords[t] {
+			result = append(result, t)
+		}
+	}
+	if len(result) < 2 {
+		return tokens
+	}
+	return result
 }
 
 // filterShortTokens removes tokens with fewer than 2 runes (single-letter
