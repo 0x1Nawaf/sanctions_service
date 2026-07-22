@@ -273,3 +273,54 @@ type CustomListSummary struct {
 type CustomListDeleteResponse struct {
 	Message string `json:"message"`
 }
+
+// Seed history (GET /api/historical_updates)
+
+type SeedRunChange struct {
+	ChangeType string `json:"change_type"`
+	Entity     string `json:"entity"`
+	RecordType string `json:"record_type,omitempty"`
+	Count      int    `json:"count"`
+}
+
+type SeedRunCountry struct {
+	Type string `json:"type,omitempty"`
+	Code string `json:"code,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+type SeedRunRecordChange struct {
+	RecordID     uint32           `json:"record_id"`
+	ChangeType   string           `json:"change_type"`
+	RecordType   string           `json:"record_type,omitempty"`
+	ActiveStatus string           `json:"active_status,omitempty"`
+	Gender       string           `json:"gender,omitempty"`
+	Action       string           `json:"action,omitempty"`
+	ActionDate   string           `json:"action_date,omitempty"`
+	Deceased     string           `json:"deceased,omitempty"`
+	DisplayName  string           `json:"display_name,omitempty"`
+	DateOfBirth  string           `json:"date_of_birth,omitempty"`
+	Countries    []SeedRunCountry `json:"countries,omitempty"`
+}
+
+type HistoricalUpdateEntry struct {
+	ID                    uint64                `json:"id"`
+	SeededAt              string                `json:"seeded_at"`
+	CompletedAt           string                `json:"completed_at,omitempty"`
+	Status                string                `json:"status"`
+	DurationMs            *uint64               `json:"duration_ms,omitempty"`
+	JSONSource            string                `json:"json_source,omitempty"`
+	IntervalSincePrevious string                `json:"interval_since_previous,omitempty"`
+	IntervalHours         *float64              `json:"interval_hours,omitempty"`
+	Changes               []SeedRunChange       `json:"changes"`
+	TotalRecordsAffected  int                   `json:"total_records_affected"`
+	RecordChanges         []SeedRunRecordChange `json:"record_changes,omitempty"`
+	RecordChangesTotal    int                   `json:"record_changes_total,omitempty"`
+}
+
+type HistoricalUpdatesResponse struct {
+	Page    int                     `json:"page"`
+	PerPage int                     `json:"per_page"`
+	Total   int                     `json:"total"`
+	Data    []HistoricalUpdateEntry `json:"data"`
+}

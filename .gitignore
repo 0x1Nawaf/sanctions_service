@@ -3,5 +3,5 @@ bin/
 .env
 *.json
 !go.sum
-server
-seeder
+/server
+/seeder

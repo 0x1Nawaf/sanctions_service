@@ -26,6 +26,7 @@ func main() {
 	recordsH := handler.NewRecordsHandler(db)
 	screenH := handler.NewScreenHandler(db)
 	customListH := handler.NewCustomListHandler(db)
+	historicalH := handler.NewHistoricalUpdatesHandler(db)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -42,6 +43,7 @@ func main() {
 		r.Post("/api/custom-lists", customListH.Upload)
 		r.Get("/api/custom-lists", customListH.List)
 		r.Delete("/api/custom-lists/{id}", customListH.Delete)
+		r.Get("/api/historical_updates", historicalH.List)
 	})
 
 	addr := ":" + cfg.ServerPort

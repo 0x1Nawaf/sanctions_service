@@ -14,7 +14,8 @@ import (
 const batchSize = 2000
 
 type Seeder struct {
-	db *sql.DB
+	db      *sql.DB
+	history *seedHistory
 }
 
 func New(db *sql.DB) *Seeder {
@@ -24,6 +25,15 @@ func New(db *sql.DB) *Seeder {
 func (s *Seeder) Run(jsonPath string) error {
 	start := time.Now()
 	log.Printf("Starting sanctions seeder from: %s", jsonPath)
+
+	var runErr error
+	defer func() {
+		s.finishSeedRun(start, runErr)
+	}()
+
+	if err := s.beginSeedRun(jsonPath, start); err != nil {
+		log.Printf("WARN: seed history tracking disabled: %v", err)
+	}
 
 	s.execOrLog("SET FOREIGN_KEY_CHECKS=0")
 	s.execOrLog("SET unique_checks=0")
@@ -73,9 +83,14 @@ func (s *Seeder) Run(jsonPath string) error {
 
 		if err := sec.fn(dec); err != nil {
 			f.Close()
-			return fmt.Errorf("seed %s: %w", key, err)
+			runErr = fmt.Errorf("seed %s: %w", key, err)
+			return runErr
 		}
 		f.Close()
+	}
+
+	if err := s.persistRecordChangeDetails(); err != nil {
+		log.Printf("WARN: record change details: %v", err)
 	}
 
 	s.execOrLog("COMMIT")
@@ -115,15 +130,42 @@ func (s *Seeder) execOrLog(query string) {
 	}
 }
 
-func (s *Seeder) bulkInsert(table string, columns string, placeholderRow string, args []interface{}, rowCount int) error {
+func (s *Seeder) bulkInsert(table string, columns string, placeholderRow string, args []interface{}, rowCount int) (int64, error) {
 	if rowCount == 0 {
-		return nil
+		return 0, nil
 	}
 	rows := make([]string, rowCount)
 	for i := range rows {
 		rows[i] = placeholderRow
 	}
 	q := fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES %s", table, columns, strings.Join(rows, ","))
+	res, err := s.db.Exec(q, args...)
+	if err != nil {
+		return 0, err
+	}
+	affected, _ := res.RowsAffected()
+	return affected, nil
+}
+
+func (s *Seeder) bulkUpsertRecords(args []interface{}, rowCount int) error {
+	if rowCount == 0 {
+		return nil
+	}
+	const cols = "id, record_type, action, action_date, gender, active_status, deceased, profile_notes"
+	const ph = "(?, ?, ?, ?, ?, ?, ?, ?)"
+	rows := make([]string, rowCount)
+	for i := range rows {
+		rows[i] = ph
+	}
+	q := fmt.Sprintf(`INSERT INTO sanctions_records (%s) VALUES %s
+		ON DUPLICATE KEY UPDATE
+		record_type=VALUES(record_type),
+		action=VALUES(action),
+		action_date=VALUES(action_date),
+		gender=VALUES(gender),
+		active_status=VALUES(active_status),
+		deceased=VALUES(deceased),
+		profile_notes=VALUES(profile_notes)`, cols, strings.Join(rows, ","))
 	_, err := s.db.Exec(q, args...)
 	return err
 }
@@ -146,6 +188,7 @@ func (s *Seeder) seedRefCountries(dec *json.Decoder) error {
 		}
 		count++
 	}
+	s.addChange("reference_synced", "sanctions_ref_countries", "", count)
 	log.Printf("  ref_countries: %d rows", count)
 	return nil
 }
@@ -166,6 +209,7 @@ func (s *Seeder) seedRefOccupations(dec *json.Decoder) error {
 		}
 		count++
 	}
+	s.addChange("reference_synced", "sanctions_ref_occupations", "", count)
 	log.Printf("  ref_occupations: %d rows", count)
 	return nil
 }
@@ -186,6 +230,7 @@ func (s *Seeder) seedRefRelationships(dec *json.Decoder) error {
 		}
 		count++
 	}
+	s.addChange("reference_synced", "sanctions_ref_relationships", "", count)
 	log.Printf("  ref_relationships: %d rows", count)
 	return nil
 }
@@ -206,6 +251,7 @@ func (s *Seeder) seedRefSanctionsLists(dec *json.Decoder) error {
 		}
 		count++
 	}
+	s.addChange("reference_synced", "sanctions_ref_sanctions_lists", "", count)
 	log.Printf("  ref_sanctions_lists: %d rows", count)
 	return nil
 }
@@ -226,6 +272,7 @@ func (s *Seeder) seedRefDescription1(dec *json.Decoder) error {
 		}
 		count++
 	}
+	s.addChange("reference_synced", "sanctions_ref_description1", "", count)
 	log.Printf("  ref_description1: %d rows", count)
 	return nil
 }
@@ -246,6 +293,7 @@ func (s *Seeder) seedRefDescription2(dec *json.Decoder) error {
 		}
 		count++
 	}
+	s.addChange("reference_synced", "sanctions_ref_description2", "", count)
 	log.Printf("  ref_description2: %d rows", count)
 	return nil
 }
@@ -266,6 +314,7 @@ func (s *Seeder) seedRefDescription3(dec *json.Decoder) error {
 		}
 		count++
 	}
+	s.addChange("reference_synced", "sanctions_ref_description3", "", count)
 	log.Printf("  ref_description3: %d rows", count)
 	return nil
 }
@@ -273,13 +322,28 @@ func (s *Seeder) seedRefDescription3(dec *json.Decoder) error {
 // --- Main records ---
 
 func (s *Seeder) seedRecords(dec *json.Decoder) error {
-	const cols = "id, record_type, action, action_date, gender, active_status, deceased, profile_notes"
-	const ph = "(?, ?, ?, ?, ?, ?, ?, ?)"
 	const colCount = 8
 
+	existing, err := s.loadExistingOfficialRecords()
+	if err != nil {
+		return fmt.Errorf("load existing records: %w", err)
+	}
+
+	incomingIDs := make(map[uint32]struct{}, len(existing))
 	args := make([]interface{}, 0, batchSize*colCount)
 	count := 0
 	batchRows := 0
+
+	flush := func() {
+		if batchRows == 0 {
+			return
+		}
+		if err := s.bulkUpsertRecords(args, batchRows); err != nil {
+			log.Printf("records upsert error: %v", err)
+		}
+		args = args[:0]
+		batchRows = 0
+	}
 
 	for dec.More() {
 		var row map[string]interface{}
@@ -287,8 +351,31 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 			return err
 		}
 
+		idRaw := intVal(row, "id")
+		var id uint32
+		switch v := idRaw.(type) {
+		case int64:
+			id = uint32(v)
+		case float64:
+			id = uint32(v)
+		default:
+			continue
+		}
+		incomingIDs[id] = struct{}{}
+		recordType := strString(row, "record_type")
+
+		if ex, ok := existing[id]; !ok {
+			s.addChange("added", "sanctions_record", recordType, 1)
+			s.addRecordEventFromRow(id, "added", recordType, row)
+			if !isActiveStatus(strString(row, "active_status")) {
+				s.addChange("added_inactive", "sanctions_record", recordType, 1)
+			}
+		} else {
+			s.classifyRecordChange(id, ex, row, recordType)
+		}
+
 		args = append(args,
-			intVal(row, "id"),
+			idRaw,
 			str(row, "record_type"),
 			str(row, "action"),
 			str(row, "action_date"),
@@ -301,26 +388,69 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 		count++
 
 		if batchRows >= batchSize {
-			if err := s.bulkInsert("sanctions_records", cols, ph, args, batchRows); err != nil {
-				log.Printf("records insert error: %v", err)
-			}
-			args = args[:0]
-			batchRows = 0
+			flush()
 		}
 
 		if count%100000 == 0 {
 			log.Printf("  records: %dk rows...", count/1000)
 		}
 	}
+	flush()
 
-	if batchRows > 0 {
-		if err := s.bulkInsert("sanctions_records", cols, ph, args, batchRows); err != nil {
-			log.Printf("records insert error: %v", err)
-		}
+	if err := s.markRecordsRemovedFromFeed(existing, incomingIDs); err != nil {
+		return err
 	}
 
 	log.Printf("  records: %d total rows", count)
 	return nil
+}
+
+func (s *Seeder) markRecordsRemovedFromFeed(existing map[uint32]existingRecord, incomingIDs map[uint32]struct{}) error {
+	const removeBatch = 500
+	var ids []uint32
+
+	for id, ex := range existing {
+		if _, ok := incomingIDs[id]; ok {
+			continue
+		}
+		ids = append(ids, id)
+		s.addChange("removed_from_feed", "sanctions_record", ex.recordType, 1)
+		s.addRecordEventFromExisting(id, "removed_from_feed", ex)
+		if isActiveStatus(ex.activeStatus) {
+			s.addChange("inactivated", "sanctions_record", ex.recordType, 1)
+			s.addRecordEventFromExisting(id, "inactivated", ex)
+		}
+
+		if len(ids) >= removeBatch {
+			if err := s.applyRemovedFromFeed(ids); err != nil {
+				return err
+			}
+			ids = ids[:0]
+		}
+	}
+	if len(ids) > 0 {
+		return s.applyRemovedFromFeed(ids)
+	}
+	return nil
+}
+
+func (s *Seeder) applyRemovedFromFeed(ids []uint32) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	setClause := `active_status = 'Inactive', action = 'del', action_date = DATE_FORMAT(NOW(), '%Y-%m-%d')`
+	q := fmt.Sprintf(`UPDATE sanctions_records SET %s WHERE custom_list_id IS NULL AND id IN (%s)`, setClause, placeholders)
+	_, err := s.db.Exec(q, args...)
+	if err != nil && strings.Contains(err.Error(), "Unknown column") {
+		q = fmt.Sprintf(`UPDATE sanctions_records SET %s WHERE id IN (%s)`, setClause, placeholders)
+		_, err = s.db.Exec(q, args...)
+	}
+	return err
 }
 
 // --- Generic child table seeder ---
@@ -435,8 +565,10 @@ func (s *Seeder) seedGenericChild(table, columns string, extractor columnExtract
 			count++
 
 			if batchRows >= batchSize {
-				if err := s.bulkInsert(table, columns, placeholders, args, batchRows); err != nil {
+				if inserted, err := s.bulkInsert(table, columns, placeholders, args, batchRows); err != nil {
 					log.Printf("%s insert error: %v", table, err)
+				} else {
+					s.addChange("child_rows_added", table, "", int(inserted))
 				}
 				args = args[:0]
 				batchRows = 0
@@ -448,8 +580,10 @@ func (s *Seeder) seedGenericChild(table, columns string, extractor columnExtract
 		}
 
 		if batchRows > 0 {
-			if err := s.bulkInsert(table, columns, placeholders, args, batchRows); err != nil {
+			if inserted, err := s.bulkInsert(table, columns, placeholders, args, batchRows); err != nil {
 				log.Printf("%s insert error: %v", table, err)
+			} else {
+				s.addChange("child_rows_added", table, "", int(inserted))
 			}
 		}
 
