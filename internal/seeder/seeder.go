@@ -4,9 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"os"
 	"strings"
 	"time"
 )
@@ -40,13 +38,28 @@ func (s *Seeder) Run(jsonPath string) error {
 		s.execOrLog("SET autocommit=1")
 	}()
 
+	if err := s.acquireSeederLock(); err != nil {
+		return err
+	}
+	defer s.releaseSeederLock()
+
 	if err := s.beginSeedRun(jsonPath, start); err != nil {
 		log.Printf("WARN: seed history tracking disabled: %v", err)
 	}
 
+	s.execOrLog("SET SESSION innodb_lock_wait_timeout = 120")
 	s.execOrLog("SET FOREIGN_KEY_CHECKS=0")
 	s.execOrLog("SET unique_checks=0")
 	s.execOrLog("SET autocommit=0")
+
+	log.Printf("Scanning JSON layout (one pass)...")
+	indexStart := time.Now()
+	sectionIndex, err := buildSectionIndex(jsonPath)
+	if err != nil {
+		runErr = fmt.Errorf("index JSON sections: %w", err)
+		return runErr
+	}
+	log.Printf("JSON layout mapped (%d sections) in %s", len(sectionIndex), time.Since(indexStart))
 
 	sections := []struct {
 		pointer string
@@ -79,14 +92,8 @@ func (s *Seeder) Run(jsonPath string) error {
 		log.Printf("Seeding section: %s", sec.pointer)
 		key := strings.TrimPrefix(sec.pointer, "/")
 
-		f, err := os.Open(jsonPath)
+		f, dec, err := openSectionDecoder(jsonPath, key, sectionIndex)
 		if err != nil {
-			return fmt.Errorf("open file: %w", err)
-		}
-
-		dec := json.NewDecoder(f)
-		if err := seekToKey(dec, key); err != nil {
-			f.Close()
 			log.Printf("  Section %s not found, skipping", key)
 			continue
 		}
@@ -122,28 +129,6 @@ func (s *Seeder) Run(jsonPath string) error {
 
 	log.Printf("Seeding complete in %s", time.Since(start))
 	return nil
-}
-
-func seekToKey(dec *json.Decoder, key string) error {
-	for {
-		t, err := dec.Token()
-		if err == io.EOF {
-			return fmt.Errorf("key %q not found", key)
-		}
-		if err != nil {
-			return err
-		}
-		if s, ok := t.(string); ok && s == key {
-			t2, err := dec.Token()
-			if err != nil {
-				return err
-			}
-			if delim, ok := t2.(json.Delim); !ok || delim != '[' {
-				return fmt.Errorf("expected array for key %q", key)
-			}
-			return nil
-		}
-	}
 }
 
 func (s *Seeder) execOrLog(query string) {
@@ -205,6 +190,9 @@ func (s *Seeder) seedRefCountries(dec *json.Decoder) error {
 		var row map[string]interface{}
 		if err := dec.Decode(&row); err != nil {
 			return err
+		}
+		if count == 0 {
+			log.Printf("  writing ref_countries...")
 		}
 		_, err := s.db.Exec(
 			"INSERT INTO sanctions_ref_countries (code, name, is_territory, profile_url) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), is_territory=VALUES(is_territory), profile_url=VALUES(profile_url)",
