@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -25,6 +26,11 @@ func (s *Seeder) persistRecordChangeDetails() error {
 	}
 
 	events := s.history.recordEvents
+	if len(events) >= maxRecordChangeEvents {
+		log.Printf("WARN: record change detail rows capped at %d; aggregate counts in seed_run_changes are complete", maxRecordChangeEvents)
+	}
+	log.Printf("Persisting %d record change detail rows", len(events))
+
 	uniqueIDs := make(map[uint32]struct{}, len(events))
 	for _, ev := range events {
 		uniqueIDs[ev.recordID] = struct{}{}

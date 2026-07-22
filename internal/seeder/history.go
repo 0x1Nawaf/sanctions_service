@@ -1,11 +1,16 @@
 package seeder
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 )
+
+// Per-run cap for detailed record rows; aggregate counts in seed_run_changes are always kept.
+const maxRecordChangeEvents = 50_000
 
 const recordEventBatchSize = 500
 
@@ -64,6 +69,9 @@ func (s *Seeder) addRecordEventFromRow(id uint32, changeType, recordType string,
 	if s.history == nil {
 		return
 	}
+	if len(s.history.recordEvents) >= maxRecordChangeEvents {
+		return
+	}
 	s.history.recordEvents = append(s.history.recordEvents, recordChangeEvent{
 		recordID:     id,
 		changeType:   changeType,
@@ -78,6 +86,9 @@ func (s *Seeder) addRecordEventFromRow(id uint32, changeType, recordType string,
 
 func (s *Seeder) addRecordEventFromExisting(id uint32, changeType string, ex existingRecord) {
 	if s.history == nil {
+		return
+	}
+	if len(s.history.recordEvents) >= maxRecordChangeEvents {
 		return
 	}
 	s.history.recordEvents = append(s.history.recordEvents, recordChangeEvent{
@@ -157,19 +168,25 @@ func nullIfEmpty(s string) interface{} {
 }
 
 type existingRecord struct {
-	recordType   string
-	activeStatus string
-	action       string
-	actionDate   string
-	gender       string
-	deceased     string
-	profileNotes string
+	recordType       string
+	activeStatus     string
+	action           string
+	actionDate       string
+	gender           string
+	deceased         string
+	profileNotesMD5  string
+}
+
+func profileNotesMD5(notes string) string {
+	sum := md5.Sum([]byte(notes))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Seeder) loadExistingOfficialRecords() (map[uint32]existingRecord, error) {
 	query := `
 		SELECT id, COALESCE(record_type, ''), COALESCE(active_status, ''), COALESCE(action, ''),
-		       COALESCE(action_date, ''), COALESCE(gender, ''), COALESCE(deceased, ''), COALESCE(profile_notes, '')
+		       COALESCE(action_date, ''), COALESCE(gender, ''), COALESCE(deceased, ''),
+		       MD5(COALESCE(profile_notes, ''))
 		FROM sanctions_records
 		WHERE custom_list_id IS NULL`
 
@@ -177,7 +194,8 @@ func (s *Seeder) loadExistingOfficialRecords() (map[uint32]existingRecord, error
 	if err != nil && strings.Contains(err.Error(), "Unknown column") {
 		query = `
 			SELECT id, COALESCE(record_type, ''), COALESCE(active_status, ''), COALESCE(action, ''),
-			       COALESCE(action_date, ''), COALESCE(gender, ''), COALESCE(deceased, ''), COALESCE(profile_notes, '')
+			       COALESCE(action_date, ''), COALESCE(gender, ''), COALESCE(deceased, ''),
+			       MD5(COALESCE(profile_notes, ''))
 			FROM sanctions_records`
 		rows, err = s.db.Query(query)
 	}
@@ -193,7 +211,7 @@ func (s *Seeder) loadExistingOfficialRecords() (map[uint32]existingRecord, error
 	for rows.Next() {
 		var id uint32
 		var rec existingRecord
-		if err := rows.Scan(&id, &rec.recordType, &rec.activeStatus, &rec.action, &rec.actionDate, &rec.gender, &rec.deceased, &rec.profileNotes); err != nil {
+		if err := rows.Scan(&id, &rec.recordType, &rec.activeStatus, &rec.action, &rec.actionDate, &rec.gender, &rec.deceased, &rec.profileNotesMD5); err != nil {
 			return nil, err
 		}
 		out[id] = rec
@@ -212,7 +230,7 @@ func recordRowChanged(ex existingRecord, row map[string]interface{}) bool {
 		ex.gender != strString(row, "gender") ||
 		ex.activeStatus != strString(row, "active_status") ||
 		ex.deceased != strString(row, "deceased") ||
-		ex.profileNotes != strString(row, "profile_notes")
+		ex.profileNotesMD5 != profileNotesMD5(strString(row, "profile_notes"))
 }
 
 func strString(row map[string]interface{}, key string) string {

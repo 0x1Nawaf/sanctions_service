@@ -352,6 +352,7 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 	if err != nil {
 		return fmt.Errorf("load existing records: %w", err)
 	}
+	log.Printf("  loaded %d existing official records for change tracking", len(existing))
 
 	incomingIDs := make(map[uint32]struct{}, len(existing))
 	args := make([]interface{}, 0, batchSize*colCount)
@@ -390,7 +391,10 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 
 		if ex, ok := existing[id]; !ok {
 			s.addChange("added", "sanctions_record", recordType, 1)
-			s.addRecordEventFromRow(id, "added", recordType, row)
+			// Cold load: millions of "added" rows — aggregate counts only (see seed_run_changes).
+			if len(existing) > 0 {
+				s.addRecordEventFromRow(id, "added", recordType, row)
+			}
 			if !isActiveStatus(strString(row, "active_status")) {
 				s.addChange("added_inactive", "sanctions_record", recordType, 1)
 			}
