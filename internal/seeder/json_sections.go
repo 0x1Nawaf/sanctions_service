@@ -6,79 +6,13 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
 
-func skipValue(dec *json.Decoder) error {
-	tok, err := dec.Token()
-	if err != nil {
-		return err
-	}
-
-	delim, ok := tok.(json.Delim)
-	if !ok {
-		return nil
-	}
-
-	switch delim {
-	case '{':
-		for dec.More() {
-			if err := skipValue(dec); err != nil {
-				return err
-			}
-			if err := skipValue(dec); err != nil {
-				return err
-			}
-		}
-		_, err = dec.Token()
-		return err
-	case '[':
-		for dec.More() {
-			if err := skipValue(dec); err != nil {
-				return err
-			}
-		}
-		_, err = dec.Token()
-		return err
-	default:
-		return fmt.Errorf("unexpected delimiter %v", delim)
-	}
-}
-
-func skipValueFrom(dec *json.Decoder, first json.Token) error {
-	delim, ok := first.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delim {
-	case '{':
-		for dec.More() {
-			if err := skipValue(dec); err != nil {
-				return err
-			}
-			if err := skipValue(dec); err != nil {
-				return err
-			}
-		}
-		_, err := dec.Token()
-		return err
-	case '[':
-		for dec.More() {
-			if err := skipValue(dec); err != nil {
-				return err
-			}
-		}
-		_, err := dec.Token()
-		return err
-	default:
-		return fmt.Errorf("unexpected delimiter %v", delim)
-	}
-}
-
-// buildSectionIndex scans the top-level JSON object once. For each top-level array
-// section it stores the byte offset where the array value begins (':' / whitespace
-// before '['). openSectionDecoder seeks there and reads the opening '[' so the
-// decoder is positioned inside the array for dec.More().
+// buildSectionIndex scans the top-level JSON object once using a byte scanner (no
+// parsing of array/object contents). For each top-level array it stores the file
+// offset immediately after the opening '['.
 func buildSectionIndex(jsonPath string) (map[string]int64, error) {
 	f, err := os.Open(jsonPath)
 	if err != nil {
@@ -86,57 +20,91 @@ func buildSectionIndex(jsonPath string) (map[string]int64, error) {
 	}
 	defer f.Close()
 
-	dec := json.NewDecoder(f)
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	totalSize := info.Size()
 	lastLog := time.Now()
 
-	tok, err := dec.Token()
-	if err != nil {
+	r := newByteOffsetReader(f)
+	if err := r.expectByte('{'); err != nil {
 		return nil, fmt.Errorf("read JSON start: %w", err)
-	}
-	delim, ok := tok.(json.Delim)
-	if !ok || delim != '{' {
-		return nil, fmt.Errorf("expected top-level JSON object")
 	}
 
 	index := make(map[string]int64, 24)
-	for dec.More() {
+	firstKey := true
+	for {
 		if time.Since(lastLog) >= 5*time.Second {
-			log.Printf("  JSON layout scan: %.2f GB read...", float64(dec.InputOffset())/1e9)
+			var pct float64
+			if totalSize > 0 {
+				pct = float64(r.pos) / float64(totalSize) * 100
+			}
+			log.Printf("  JSON layout scan: %.2f GB / %.2f GB (%.0f%%)...",
+				float64(r.pos)/1e9, float64(totalSize)/1e9, pct)
 			lastLog = time.Now()
 		}
 
-		keyTok, err := dec.Token()
-		if err != nil {
-			return nil, fmt.Errorf("read section key: %w", err)
+		if err := r.skipWhitespace(); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
 		}
-		key, ok := keyTok.(string)
-		if !ok {
-			return nil, fmt.Errorf("expected string key at top level")
+		b, err := r.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		if b == '}' {
+			break
+		}
+		if b == ',' {
+			if firstKey {
+				return nil, fmt.Errorf("unexpected comma at offset %d", r.pos)
+			}
+			if err := r.skipWhitespace(); err != nil {
+				return nil, err
+			}
+			b, err = r.ReadByte()
+			if err != nil {
+				return nil, err
+			}
+		}
+		if b != '"' {
+			return nil, fmt.Errorf("expected key string at offset %d", r.pos)
+		}
+		if err := r.UnreadByte(b); err != nil {
+			return nil, err
 		}
 
-		valueStart := dec.InputOffset()
-		first, err := dec.Token()
+		key, err := r.readJSONString()
+		if err != nil {
+			return nil, fmt.Errorf("read key: %w", err)
+		}
+		if err := r.expectByte(':'); err != nil {
+			return nil, fmt.Errorf("after key %q: %w", key, err)
+		}
+		if err := r.skipWhitespace(); err != nil {
+			return nil, err
+		}
+		val, err := r.ReadByte()
 		if err != nil {
 			return nil, fmt.Errorf("read value for %q: %w", key, err)
 		}
-		valueDelim, ok := first.(json.Delim)
-		if !ok || valueDelim != '[' {
-			if err := skipValueFrom(dec, first); err != nil {
-				return nil, err
+		if val == '[' {
+			index[key] = r.pos
+			if err := r.skipBalanced('[', ']'); err != nil {
+				return nil, fmt.Errorf("skip array %q: %w", key, err)
 			}
-			continue
-		}
-
-		index[key] = valueStart
-
-		for dec.More() {
-			if err := skipValue(dec); err != nil {
-				return nil, err
+		} else {
+			if err := r.skipJSONValue(val); err != nil {
+				return nil, fmt.Errorf("skip value %q: %w", key, err)
 			}
 		}
-		if _, err := dec.Token(); err != nil {
-			return nil, fmt.Errorf("close array for %q: %w", key, err)
-		}
+		firstKey = false
 	}
 	return index, nil
 }
@@ -157,7 +125,9 @@ func openSectionDecoder(jsonPath, key string, index map[string]int64) (*os.File,
 		return nil, nil, err
 	}
 
-	dec := json.NewDecoder(f)
+	// File offset is inside the array (first element or ']'). Prefix '[' so the
+	// decoder sees a valid JSON array and dec.More() works.
+	dec := json.NewDecoder(io.MultiReader(strings.NewReader("["), f))
 	tok, err := dec.Token()
 	if err != nil {
 		f.Close()

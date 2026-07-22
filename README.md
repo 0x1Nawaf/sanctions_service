@@ -35,6 +35,8 @@ cp .env.example .env
 ./bin/seeder /path/to/sanctions.json
 ```
 
+Feed files are often **multi‑GB (up to ~15 GB)**. The seeder does one sequential layout scan per file (byte-level, not full JSON parse), shows progress every few seconds, and writes a sidecar cache **`sanctions.json.section-index`** (size + mtime). Unchanged files reuse the cache on the next run so seeding skips the full scan.
+
 ## Run
 
 ```bash

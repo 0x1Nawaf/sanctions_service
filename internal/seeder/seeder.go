@@ -52,14 +52,19 @@ func (s *Seeder) Run(jsonPath string) error {
 	s.execOrLog("SET unique_checks=0")
 	s.execOrLog("SET autocommit=0")
 
-	log.Printf("Scanning JSON layout (one pass)...")
+	log.Printf("Loading JSON section index...")
 	indexStart := time.Now()
-	sectionIndex, err := buildSectionIndex(jsonPath)
+	sectionIndex, fromCache, err := loadOrBuildSectionIndex(jsonPath)
 	if err != nil {
 		runErr = fmt.Errorf("index JSON sections: %w", err)
 		return runErr
 	}
-	log.Printf("JSON layout mapped (%d sections) in %s", len(sectionIndex), time.Since(indexStart))
+	if fromCache {
+		log.Printf("Using cached JSON section index (%d sections, built in %s)",
+			len(sectionIndex), time.Since(indexStart))
+	} else {
+		log.Printf("JSON layout mapped (%d sections) in %s", len(sectionIndex), time.Since(indexStart))
+	}
 
 	sections := []struct {
 		pointer string
