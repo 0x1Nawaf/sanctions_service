@@ -32,10 +32,10 @@ type seedHistory struct {
 	recordEvents []recordChangeEvent
 }
 
-func (s *Seeder) beginSeedRun(jsonPath string, startedAt time.Time) error {
+func (s *Seeder) beginSeedRun(_ string, startedAt time.Time) error {
 	res, err := s.db.Exec(
-		`INSERT INTO seed_runs (started_at, json_source, status) VALUES (?, ?, 'running')`,
-		startedAt, nullIfEmpty(jsonPath),
+		`INSERT INTO seed_runs (started_at, json_source, status) VALUES (?, NULL, 'running')`,
+		startedAt,
 	)
 	if err != nil {
 		return err
@@ -92,42 +92,61 @@ func (s *Seeder) addRecordEventFromExisting(id uint32, changeType string, ex exi
 	})
 }
 
-func (s *Seeder) finishSeedRun(startedAt time.Time, runErr error) {
+func (s *Seeder) markSeedRunFailed(startedAt time.Time) {
 	if s.history == nil {
 		return
 	}
-
-	status := "completed"
-	if runErr != nil {
-		status = "failed"
-	}
-	durationMs := time.Since(startedAt).Milliseconds()
-	completedAt := time.Now()
-
-	_, err := s.db.Exec(
-		`UPDATE seed_runs SET completed_at = ?, status = ?, duration_ms = ? WHERE id = ?`,
-		completedAt, status, durationMs, s.history.runID,
-	)
-	if err != nil {
-		log.Printf("WARN: update seed_run: %v", err)
-	}
-
-	if runErr != nil {
+	if err := s.db.Ping(); err != nil {
+		log.Printf("WARN: cannot mark seed run failed (database unavailable): %v", err)
 		return
 	}
+	durationMs := time.Since(startedAt).Milliseconds()
+	_, err := s.db.Exec(
+		`UPDATE seed_runs SET completed_at = ?, status = 'failed', duration_ms = ? WHERE id = ?`,
+		time.Now(), durationMs, s.history.runID,
+	)
+	if err != nil {
+		log.Printf("WARN: update seed_run failed status: %v", err)
+	}
+}
 
+func (s *Seeder) persistSeedRunChanges() error {
+	if s.history == nil || len(s.history.counts) == 0 {
+		return nil
+	}
+
+	const cols = `seed_run_id, change_type, entity, record_type, count`
+	const ph = `(?, ?, ?, ?, ?)`
+
+	args := make([]interface{}, 0, len(s.history.counts)*5)
+	rows := 0
 	for key, count := range s.history.counts {
 		if count <= 0 {
 			continue
 		}
-		_, err := s.db.Exec(
-			`INSERT INTO seed_run_changes (seed_run_id, change_type, entity, record_type, count) VALUES (?, ?, ?, ?, ?)`,
-			s.history.runID, key.changeType, key.entity, nullIfEmpty(key.recordType), count,
-		)
-		if err != nil {
-			log.Printf("WARN: insert seed_run_change: %v", err)
-		}
+		args = append(args, s.history.runID, key.changeType, key.entity, nullIfEmpty(key.recordType), count)
+		rows++
 	}
+	if rows == 0 {
+		return nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat(ph+",", rows), ",")
+	q := fmt.Sprintf("INSERT INTO seed_run_changes (%s) VALUES %s", cols, placeholders)
+	_, err := s.db.Exec(q, args...)
+	return err
+}
+
+func (s *Seeder) finalizeSeedRunSuccess(startedAt time.Time) error {
+	if s.history == nil {
+		return nil
+	}
+	durationMs := time.Since(startedAt).Milliseconds()
+	_, err := s.db.Exec(
+		`UPDATE seed_runs SET completed_at = ?, status = 'completed', duration_ms = ? WHERE id = ?`,
+		time.Now(), durationMs, s.history.runID,
+	)
+	return err
 }
 
 func nullIfEmpty(s string) interface{} {

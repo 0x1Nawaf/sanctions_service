@@ -44,7 +44,7 @@ func (h *HistoricalUpdatesHandler) List(w http.ResponseWriter, r *http.Request) 
 	}
 
 	rows, err := h.db.Query(`
-		SELECT id, started_at, completed_at, json_source, status, duration_ms
+		SELECT id, started_at, completed_at, status
 		FROM seed_runs
 		ORDER BY started_at DESC
 		LIMIT ? OFFSET ?`, perPage, offset)
@@ -64,11 +64,9 @@ func (h *HistoricalUpdatesHandler) List(w http.ResponseWriter, r *http.Request) 
 		var id uint64
 		var startedAt time.Time
 		var completedAt sql.NullTime
-		var jsonSource sql.NullString
 		var status string
-		var durationMs sql.NullInt64
 
-		if err := rows.Scan(&id, &startedAt, &completedAt, &jsonSource, &status, &durationMs); err != nil {
+		if err := rows.Scan(&id, &startedAt, &completedAt, &status); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read seed run")
 			return
 		}
@@ -80,13 +78,6 @@ func (h *HistoricalUpdatesHandler) List(w http.ResponseWriter, r *http.Request) 
 		}
 		if completedAt.Valid {
 			entry.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
-		}
-		if jsonSource.Valid {
-			entry.JSONSource = jsonSource.String
-		}
-		if durationMs.Valid && durationMs.Int64 >= 0 {
-			ms := uint64(durationMs.Int64)
-			entry.DurationMs = &ms
 		}
 
 		runs = append(runs, runRow{entry: entry, start: startedAt})
@@ -151,10 +142,11 @@ func (h *HistoricalUpdatesHandler) List(w http.ResponseWriter, r *http.Request) 
 
 func (h *HistoricalUpdatesHandler) loadChanges(runID uint64) ([]model.SeedRunChange, int, error) {
 	rows, err := h.db.Query(`
-		SELECT change_type, entity, record_type, count
+		SELECT change_type, record_type, count
 		FROM seed_run_changes
-		WHERE seed_run_id = ?
-		ORDER BY entity, change_type, record_type`, runID)
+		WHERE seed_run_id = ? AND entity = 'sanctions_record'
+		  AND change_type NOT IN ('added_inactive')
+		ORDER BY change_type, record_type`, runID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -162,16 +154,12 @@ func (h *HistoricalUpdatesHandler) loadChanges(runID uint64) ([]model.SeedRunCha
 
 	var changes []model.SeedRunChange
 	totalAffected := 0
-	recordChangeTypes := map[string]bool{
-		"added": true, "updated": true, "removed_from_feed": true,
-		"inactivated": true, "reactivated": true,
-	}
 
 	for rows.Next() {
 		var ch model.SeedRunChange
 		var recordType sql.NullString
 		var count int
-		if err := rows.Scan(&ch.ChangeType, &ch.Entity, &recordType, &count); err != nil {
+		if err := rows.Scan(&ch.ChangeType, &recordType, &count); err != nil {
 			return nil, 0, err
 		}
 		if recordType.Valid {
@@ -179,10 +167,7 @@ func (h *HistoricalUpdatesHandler) loadChanges(runID uint64) ([]model.SeedRunCha
 		}
 		ch.Count = count
 		changes = append(changes, ch)
-
-		if ch.Entity == "sanctions_record" && recordChangeTypes[ch.ChangeType] {
-			totalAffected += count
-		}
+		totalAffected += count
 	}
 	return changes, totalAffected, rows.Err()
 }
@@ -194,7 +179,7 @@ func (h *HistoricalUpdatesHandler) loadRecordChanges(runID uint64, limit int) ([
 	}
 
 	rows, err := h.db.Query(`
-		SELECT record_id, change_type, record_type, active_status, gender, action, action_date, deceased,
+		SELECT record_id, change_type, record_type, active_status,
 		       display_name, date_of_birth, countries_json
 		FROM seed_run_record_changes
 		WHERE seed_run_id = ?
@@ -208,22 +193,18 @@ func (h *HistoricalUpdatesHandler) loadRecordChanges(runID uint64, limit int) ([
 	var out []model.SeedRunRecordChange
 	for rows.Next() {
 		var rec model.SeedRunRecordChange
-		var recordType, activeStatus, gender, action, actionDate, deceased sql.NullString
+		var recordType, activeStatus sql.NullString
 		var displayName, dateOfBirth sql.NullString
 		var countriesJSON sql.NullString
 
 		if err := rows.Scan(
-			&rec.RecordID, &rec.ChangeType, &recordType, &activeStatus, &gender, &action, &actionDate, &deceased,
+			&rec.RecordID, &rec.ChangeType, &recordType, &activeStatus,
 			&displayName, &dateOfBirth, &countriesJSON,
 		); err != nil {
 			return nil, 0, err
 		}
 		rec.RecordType = recordType.String
 		rec.ActiveStatus = activeStatus.String
-		rec.Gender = gender.String
-		rec.Action = action.String
-		rec.ActionDate = actionDate.String
-		rec.Deceased = deceased.String
 		rec.DisplayName = displayName.String
 		rec.DateOfBirth = dateOfBirth.String
 		if countriesJSON.Valid && countriesJSON.String != "" {

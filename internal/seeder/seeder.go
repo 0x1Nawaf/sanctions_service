@@ -27,8 +27,17 @@ func (s *Seeder) Run(jsonPath string) error {
 	log.Printf("Starting sanctions seeder from: %s", jsonPath)
 
 	var runErr error
+	committed := false
 	defer func() {
-		s.finishSeedRun(start, runErr)
+		if !committed {
+			s.execOrLog("ROLLBACK")
+			if runErr != nil {
+				s.markSeedRunFailed(start)
+			}
+		}
+		s.execOrLog("SET unique_checks=1")
+		s.execOrLog("SET FOREIGN_KEY_CHECKS=1")
+		s.execOrLog("SET autocommit=1")
 	}()
 
 	if err := s.beginSeedRun(jsonPath, start); err != nil {
@@ -90,13 +99,23 @@ func (s *Seeder) Run(jsonPath string) error {
 	}
 
 	if err := s.persistRecordChangeDetails(); err != nil {
-		log.Printf("WARN: record change details: %v", err)
+		runErr = fmt.Errorf("record change details: %w", err)
+		return runErr
+	}
+	if err := s.persistSeedRunChanges(); err != nil {
+		runErr = fmt.Errorf("seed run changes: %w", err)
+		return runErr
+	}
+	if err := s.finalizeSeedRunSuccess(start); err != nil {
+		runErr = fmt.Errorf("finalize seed run: %w", err)
+		return runErr
 	}
 
-	s.execOrLog("COMMIT")
-	s.execOrLog("SET unique_checks=1")
-	s.execOrLog("SET FOREIGN_KEY_CHECKS=1")
-	s.execOrLog("SET autocommit=1")
+	if err := s.execSQL("COMMIT"); err != nil {
+		runErr = fmt.Errorf("commit: %w", err)
+		return runErr
+	}
+	committed = true
 
 	log.Printf("Seeding complete in %s", time.Since(start))
 	return nil
@@ -128,6 +147,11 @@ func (s *Seeder) execOrLog(query string) {
 	if _, err := s.db.Exec(query); err != nil {
 		log.Printf("WARN: %s — %v", query, err)
 	}
+}
+
+func (s *Seeder) execSQL(query string, args ...interface{}) error {
+	_, err := s.db.Exec(query, args...)
+	return err
 }
 
 func (s *Seeder) bulkInsert(table string, columns string, placeholderRow string, args []interface{}, rowCount int) (int64, error) {

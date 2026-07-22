@@ -25,7 +25,7 @@ func main() {
 		log.Fatalf("JSON file not found: %s", jsonPath)
 	}
 
-	db, err := database.Connect(cfg)
+	db, err := database.ConnectForSeeder(cfg)
 	if err != nil {
 		log.Fatalf("Database connection failed: %v", err)
 	}

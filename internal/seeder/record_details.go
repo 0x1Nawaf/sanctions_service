@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -53,17 +52,18 @@ func (s *Seeder) persistRecordChangeDetails() error {
 	args := make([]interface{}, 0, recordEventBatchSize*12)
 	rows := 0
 
-	flush := func() {
+	flush := func() error {
 		if rows == 0 {
-			return
+			return nil
 		}
 		placeholders := strings.TrimRight(strings.Repeat(insertPh+",", rows), ",")
 		q := fmt.Sprintf("INSERT INTO seed_run_record_changes (%s) VALUES %s", insertCols, placeholders)
 		if _, err := s.db.Exec(q, args...); err != nil {
-			log.Printf("WARN: insert seed_run_record_changes batch: %v", err)
+			return fmt.Errorf("insert seed_run_record_changes: %w", err)
 		}
 		args = args[:0]
 		rows = 0
+		return nil
 	}
 
 	for _, ev := range events {
@@ -93,11 +93,12 @@ func (s *Seeder) persistRecordChangeDetails() error {
 		)
 		rows++
 		if rows >= recordEventBatchSize {
-			flush()
+			if err := flush(); err != nil {
+				return err
+			}
 		}
 	}
-	flush()
-	return nil
+	return flush()
 }
 
 func (s *Seeder) enrichRecordBatch(ids []uint32, out map[uint32]recordEnrichment) error {

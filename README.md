@@ -77,6 +77,8 @@ GET /api/historical_updates?page=1&per_page=25
 
 Returns seeder run timestamps, aggregate change counts, interval since the previous run, and per-record snapshots (`display_name`, `countries`, `date_of_birth`). Query params: `include_records=false`, `records_limit` (default 100, max 500).
 
+See [docs/INTEGRATION_HISTORICAL_UPDATES.md](docs/INTEGRATION_HISTORICAL_UPDATES.md) for a full integration guide.
+
 **Health check**
 
 ```

@@ -278,7 +278,6 @@ type CustomListDeleteResponse struct {
 
 type SeedRunChange struct {
 	ChangeType string `json:"change_type"`
-	Entity     string `json:"entity"`
 	RecordType string `json:"record_type,omitempty"`
 	Count      int    `json:"count"`
 }
@@ -294,10 +293,6 @@ type SeedRunRecordChange struct {
 	ChangeType   string           `json:"change_type"`
 	RecordType   string           `json:"record_type,omitempty"`
 	ActiveStatus string           `json:"active_status,omitempty"`
-	Gender       string           `json:"gender,omitempty"`
-	Action       string           `json:"action,omitempty"`
-	ActionDate   string           `json:"action_date,omitempty"`
-	Deceased     string           `json:"deceased,omitempty"`
 	DisplayName  string           `json:"display_name,omitempty"`
 	DateOfBirth  string           `json:"date_of_birth,omitempty"`
 	Countries    []SeedRunCountry `json:"countries,omitempty"`
@@ -308,8 +303,6 @@ type HistoricalUpdateEntry struct {
 	SeededAt              string                `json:"seeded_at"`
 	CompletedAt           string                `json:"completed_at,omitempty"`
 	Status                string                `json:"status"`
-	DurationMs            *uint64               `json:"duration_ms,omitempty"`
-	JSONSource            string                `json:"json_source,omitempty"`
 	IntervalSincePrevious string                `json:"interval_since_previous,omitempty"`
 	IntervalHours         *float64              `json:"interval_hours,omitempty"`
 	Changes               []SeedRunChange       `json:"changes"`

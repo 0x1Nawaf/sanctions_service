@@ -36,6 +36,11 @@ func (c *Config) DSN() string {
 	return c.DBUser + ":" + c.DBPassword + "@tcp(" + c.DBHost + ":" + c.DBPort + ")/" + c.DBName + "?charset=utf8mb4&parseTime=true&multiStatements=true"
 }
 
+// SeederDSN adds long timeouts for multi-hour bulk loads.
+func (c *Config) SeederDSN() string {
+	return c.DSN() + "&readTimeout=7200s&writeTimeout=7200s&timeout=60s"
+}
+
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
