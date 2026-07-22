@@ -64,7 +64,7 @@ func skipValue(dec *json.Decoder) error {
 }
 
 // buildSectionIndex scans the top-level JSON object once and records the byte offset
-// of each section array (value starts at '[').
+// inside each top-level array (immediately after the opening '[').
 func buildSectionIndex(jsonPath string) (map[string]int64, error) {
 	f, err := os.Open(jsonPath)
 	if err != nil {
@@ -95,7 +95,6 @@ func buildSectionIndex(jsonPath string) (map[string]int64, error) {
 			return nil, fmt.Errorf("expected string key at top level")
 		}
 
-		valueStart := or.pos
 		first, err := dec.Token()
 		if err != nil {
 			return nil, fmt.Errorf("read value for %q: %w", key, err)
@@ -107,7 +106,8 @@ func buildSectionIndex(jsonPath string) (map[string]int64, error) {
 			}
 			continue
 		}
-		index[key] = valueStart
+		// Offset after '[' — decoder at first array element (or closing ']').
+		index[key] = or.pos
 		for dec.More() {
 			if err := skipValue(dec); err != nil {
 				return nil, err
@@ -167,15 +167,5 @@ func openSectionDecoder(jsonPath, key string, index map[string]int64) (*os.File,
 	}
 
 	dec := json.NewDecoder(f)
-	tok, err := dec.Token()
-	if err != nil {
-		f.Close()
-		return nil, nil, fmt.Errorf("read array start for %q: %w", key, err)
-	}
-	d, ok := tok.(json.Delim)
-	if !ok || d != '[' {
-		f.Close()
-		return nil, nil, fmt.Errorf("expected array for key %q", key)
-	}
 	return f, dec, nil
 }

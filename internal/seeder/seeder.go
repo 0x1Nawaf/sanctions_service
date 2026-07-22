@@ -94,7 +94,7 @@ func (s *Seeder) Run(jsonPath string) error {
 
 		f, dec, err := openSectionDecoder(jsonPath, key, sectionIndex)
 		if err != nil {
-			log.Printf("  Section %s not found, skipping", key)
+			log.Printf("  Section %s skipped: %v", key, err)
 			continue
 		}
 
