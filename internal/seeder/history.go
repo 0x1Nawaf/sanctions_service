@@ -1,8 +1,6 @@
 package seeder
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -96,10 +94,6 @@ func (s *Seeder) addRecordEventFromExisting(id uint32, changeType string, ex exi
 		changeType:   changeType,
 		recordType:   ex.recordType,
 		activeStatus: ex.activeStatus,
-		action:       ex.action,
-		actionDate:   ex.actionDate,
-		gender:       ex.gender,
-		deceased:     ex.deceased,
 	})
 }
 
@@ -168,34 +162,20 @@ func nullIfEmpty(s string) interface{} {
 }
 
 type existingRecord struct {
-	recordType       string
-	activeStatus     string
-	action           string
-	actionDate       string
-	gender           string
-	deceased         string
-	profileNotesMD5  string
-}
-
-func profileNotesMD5(notes string) string {
-	sum := md5.Sum([]byte(notes))
-	return hex.EncodeToString(sum[:])
+	recordType   string
+	activeStatus string
 }
 
 func (s *Seeder) loadExistingOfficialRecords() (map[uint32]existingRecord, error) {
 	query := `
-		SELECT id, COALESCE(record_type, ''), COALESCE(active_status, ''), COALESCE(action, ''),
-		       COALESCE(action_date, ''), COALESCE(gender, ''), COALESCE(deceased, ''),
-		       MD5(COALESCE(profile_notes, ''))
+		SELECT id, COALESCE(record_type, ''), COALESCE(active_status, '')
 		FROM sanctions_records
 		WHERE custom_list_id IS NULL`
 
 	rows, err := s.db.Query(query)
 	if err != nil && strings.Contains(err.Error(), "Unknown column") {
 		query = `
-			SELECT id, COALESCE(record_type, ''), COALESCE(active_status, ''), COALESCE(action, ''),
-			       COALESCE(action_date, ''), COALESCE(gender, ''), COALESCE(deceased, ''),
-			       MD5(COALESCE(profile_notes, ''))
+			SELECT id, COALESCE(record_type, ''), COALESCE(active_status, '')
 			FROM sanctions_records`
 		rows, err = s.db.Query(query)
 	}
@@ -207,30 +187,25 @@ func (s *Seeder) loadExistingOfficialRecords() (map[uint32]existingRecord, error
 	}
 	defer rows.Close()
 
-	out := make(map[uint32]existingRecord)
+	out := make(map[uint32]existingRecord, 4_000_000)
+	loaded := 0
 	for rows.Next() {
 		var id uint32
 		var rec existingRecord
-		if err := rows.Scan(&id, &rec.recordType, &rec.activeStatus, &rec.action, &rec.actionDate, &rec.gender, &rec.deceased, &rec.profileNotesMD5); err != nil {
+		if err := rows.Scan(&id, &rec.recordType, &rec.activeStatus); err != nil {
 			return nil, err
 		}
 		out[id] = rec
+		loaded++
+		if loaded%500_000 == 0 {
+			log.Printf("  loading existing records: %dk...", loaded/1000)
+		}
 	}
 	return out, rows.Err()
 }
 
 func isActiveStatus(status string) bool {
 	return strings.EqualFold(strings.TrimSpace(status), "active")
-}
-
-func recordRowChanged(ex existingRecord, row map[string]interface{}) bool {
-	return ex.recordType != strString(row, "record_type") ||
-		ex.action != strString(row, "action") ||
-		ex.actionDate != strString(row, "action_date") ||
-		ex.gender != strString(row, "gender") ||
-		ex.activeStatus != strString(row, "active_status") ||
-		ex.deceased != strString(row, "deceased") ||
-		ex.profileNotesMD5 != profileNotesMD5(strString(row, "profile_notes"))
 }
 
 func strString(row map[string]interface{}, key string) string {
@@ -249,9 +224,5 @@ func (s *Seeder) classifyRecordChange(id uint32, ex existingRecord, row map[stri
 	} else if isActiveStatus(ex.activeStatus) && !isActiveStatus(newActive) {
 		s.addChange("inactivated", "sanctions_record", recordType, 1)
 		s.addRecordEventFromRow(id, "inactivated", recordType, row)
-	}
-	if recordRowChanged(ex, row) {
-		s.addChange("updated", "sanctions_record", recordType, 1)
-		s.addRecordEventFromRow(id, "updated", recordType, row)
 	}
 }

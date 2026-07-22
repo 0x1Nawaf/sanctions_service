@@ -31,9 +31,9 @@ func (s *Seeder) Run(jsonPath string) error {
 	defer func() {
 		if !committed {
 			s.execOrLog("ROLLBACK")
-			if runErr != nil {
-				s.markSeedRunFailed(start)
-			}
+		}
+		if runErr != nil {
+			s.markSeedRunFailed(start)
 		}
 		s.execOrLog("SET unique_checks=1")
 		s.execOrLog("SET FOREIGN_KEY_CHECKS=1")
@@ -75,6 +75,7 @@ func (s *Seeder) Run(jsonPath string) error {
 	}
 
 	for _, sec := range sections {
+		secStart := time.Now()
 		log.Printf("Seeding section: %s", sec.pointer)
 		key := strings.TrimPrefix(sec.pointer, "/")
 
@@ -96,7 +97,15 @@ func (s *Seeder) Run(jsonPath string) error {
 			return runErr
 		}
 		f.Close()
+		log.Printf("  section %s finished in %s", sec.pointer, time.Since(secStart))
 	}
+
+	if err := s.execSQL("COMMIT"); err != nil {
+		runErr = fmt.Errorf("commit: %w", err)
+		return runErr
+	}
+	committed = true
+	log.Printf("Sanctions data committed in %s", time.Since(start))
 
 	if err := s.persistRecordChangeDetails(); err != nil {
 		runErr = fmt.Errorf("record change details: %w", err)
@@ -110,12 +119,6 @@ func (s *Seeder) Run(jsonPath string) error {
 		runErr = fmt.Errorf("finalize seed run: %w", err)
 		return runErr
 	}
-
-	if err := s.execSQL("COMMIT"); err != nil {
-		runErr = fmt.Errorf("commit: %w", err)
-		return runErr
-	}
-	committed = true
 
 	log.Printf("Seeding complete in %s", time.Since(start))
 	return nil
@@ -346,28 +349,32 @@ func (s *Seeder) seedRefDescription3(dec *json.Decoder) error {
 // --- Main records ---
 
 func (s *Seeder) seedRecords(dec *json.Decoder) error {
+	const recordCols = "id, record_type, action, action_date, gender, active_status, deceased, profile_notes"
+	const recordPh = "(?, ?, ?, ?, ?, ?, ?, ?)"
 	const colCount = 8
 
+	loadStart := time.Now()
 	existing, err := s.loadExistingOfficialRecords()
 	if err != nil {
 		return fmt.Errorf("load existing records: %w", err)
 	}
-	log.Printf("  loaded %d existing official records for change tracking", len(existing))
+	log.Printf("  loaded %d existing official records in %s", len(existing), time.Since(loadStart))
 
 	incomingIDs := make(map[uint32]struct{}, len(existing))
-	args := make([]interface{}, 0, batchSize*colCount)
+	insertArgs := make([]interface{}, 0, batchSize*colCount)
+	insertRows := 0
 	count := 0
-	batchRows := 0
+	skippedExisting := 0
 
-	flush := func() {
-		if batchRows == 0 {
+	flushInserts := func() {
+		if insertRows == 0 {
 			return
 		}
-		if err := s.bulkUpsertRecords(args, batchRows); err != nil {
-			log.Printf("records upsert error: %v", err)
+		if _, err := s.bulkInsert("sanctions_records", recordCols, recordPh, insertArgs, insertRows); err != nil {
+			log.Printf("records insert error: %v", err)
 		}
-		args = args[:0]
-		batchRows = 0
+		insertArgs = insertArgs[:0]
+		insertRows = 0
 	}
 
 	for dec.More() {
@@ -389,20 +396,25 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 		incomingIDs[id] = struct{}{}
 		recordType := strString(row, "record_type")
 
-		if ex, ok := existing[id]; !ok {
-			s.addChange("added", "sanctions_record", recordType, 1)
-			// Cold load: millions of "added" rows — aggregate counts only (see seed_run_changes).
-			if len(existing) > 0 {
-				s.addRecordEventFromRow(id, "added", recordType, row)
-			}
-			if !isActiveStatus(strString(row, "active_status")) {
-				s.addChange("added_inactive", "sanctions_record", recordType, 1)
-			}
-		} else {
+		if ex, ok := existing[id]; ok {
 			s.classifyRecordChange(id, ex, row, recordType)
+			skippedExisting++
+			count++
+			if count%100_000 == 0 {
+				log.Printf("  records: %dk rows scanned...", count/1000)
+			}
+			continue
 		}
 
-		args = append(args,
+		s.addChange("added", "sanctions_record", recordType, 1)
+		if len(existing) > 0 {
+			s.addRecordEventFromRow(id, "added", recordType, row)
+		}
+		if !isActiveStatus(strString(row, "active_status")) {
+			s.addChange("added_inactive", "sanctions_record", recordType, 1)
+		}
+
+		insertArgs = append(insertArgs,
 			idRaw,
 			str(row, "record_type"),
 			str(row, "action"),
@@ -412,24 +424,24 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 			str(row, "deceased"),
 			str(row, "profile_notes"),
 		)
-		batchRows++
+		insertRows++
 		count++
 
-		if batchRows >= batchSize {
-			flush()
+		if insertRows >= batchSize {
+			flushInserts()
 		}
 
-		if count%100000 == 0 {
-			log.Printf("  records: %dk rows...", count/1000)
+		if count%100_000 == 0 {
+			log.Printf("  records: %dk rows scanned...", count/1000)
 		}
 	}
-	flush()
+	flushInserts()
 
 	if err := s.markRecordsRemovedFromFeed(existing, incomingIDs); err != nil {
 		return err
 	}
 
-	log.Printf("  records: %d total rows", count)
+	log.Printf("  records: %d in feed (%d already in DB, %d new inserts)", count, skippedExisting, count-skippedExisting)
 	return nil
 }
 
