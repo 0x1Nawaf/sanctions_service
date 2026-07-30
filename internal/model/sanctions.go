@@ -42,8 +42,9 @@ type SanctionsRecord struct {
 	ActiveStatus NullString `json:"active_status"`
 	Deceased     NullString `json:"deceased"`
 	ProfileNotes NullString `json:"profile_notes"`
-	CustomListID *uint32    `json:"custom_list_id,omitempty"`
-	Source       string     `json:"source"`
+	CustomListID   *uint32 `json:"custom_list_id,omitempty"`
+	CustomListName string  `json:"custom_list_name,omitempty"`
+	Source         string  `json:"source"`
 
 	Names        []SanctionsName               `json:"names,omitempty"`
 	Dates        []SanctionsDate               `json:"dates,omitempty"`
@@ -205,9 +206,11 @@ type ScreenRequest struct {
 }
 
 type ScreenResult struct {
-	Record      SanctionsRecord `json:"record"`
-	Score       int             `json:"score"`
-	MatchedName string          `json:"matched_name"`
+	Record         SanctionsRecord `json:"record"`
+	Score          int             `json:"score"`
+	MatchedName    string          `json:"matched_name"`
+	IsCustomList   bool            `json:"is_custom_list"`
+	CustomListName string          `json:"custom_list_name,omitempty"`
 }
 
 type ScreenResponse struct {

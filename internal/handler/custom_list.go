@@ -54,15 +54,7 @@ func (h *CustomListHandler) Upload(w http.ResponseWriter, r *http.Request) {
 
 	entriesAdded := 0
 	for _, entry := range req.Entries {
-		recordType := entry.RecordType
-		if recordType == "" {
-			recordType = "Individual"
-		}
-		if strings.EqualFold(recordType, "entity") {
-			recordType = "Entity"
-		} else {
-			recordType = "Individual"
-		}
+		recordType := normalizeRecordType(entry.RecordType)
 
 		recRes, err := tx.Exec(`
 			INSERT INTO sanctions_records (record_type, gender, active_status, profile_notes, custom_list_id)
@@ -146,6 +138,35 @@ func nullIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// normalizeRecordType maps upload values to the same record_type values used by
+// the official sanctions feed ("Person" or "Entity").
+func normalizeRecordType(recordType string) string {
+	switch strings.ToLower(strings.TrimSpace(recordType)) {
+	case "entity":
+		return "Entity"
+	default:
+		return "Person"
+	}
+}
+
+func applyCustomListMeta(rec *model.SanctionsRecord, customListID sql.NullInt64, listName string) {
+	if customListID.Valid {
+		clID := uint32(customListID.Int64)
+		rec.CustomListID = &clID
+		rec.CustomListName = listName
+		if listName != "" {
+			rec.Source = "custom_list:" + listName
+		} else {
+			rec.Source = "custom_list"
+		}
+	} else {
+		rec.Source = "sanctions_list"
+	}
+	if rec.RecordType.Valid {
+		rec.RecordType.String = normalizeRecordType(rec.RecordType.String)
+	}
 }
 
 func (h *CustomListHandler) List(w http.ResponseWriter, r *http.Request) {

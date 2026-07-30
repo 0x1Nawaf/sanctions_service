@@ -141,9 +141,11 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 			continue
 		}
 		results = append(results, model.ScreenResult{
-			Record:      rec,
-			Score:       s.score,
-			MatchedName: s.name,
+			Record:         rec,
+			Score:          s.score,
+			MatchedName:    s.name,
+			IsCustomList:   rec.CustomListID != nil,
+			CustomListName: rec.CustomListName,
 		})
 	}
 
@@ -437,13 +439,7 @@ func (h *ScreenHandler) loadRecords(ids []uint32) ([]model.SanctionsRecord, erro
 			&customListID, &listName); err != nil {
 			continue
 		}
-		if customListID.Valid {
-			clID := uint32(customListID.Int64)
-			rec.CustomListID = &clID
-			rec.Source = "custom_list:" + listName
-		} else {
-			rec.Source = "sanctions_list"
-		}
+		applyCustomListMeta(&rec, customListID, listName)
 		records = append(records, rec)
 	}
 

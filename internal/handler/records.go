@@ -96,13 +96,7 @@ func (h *RecordsHandler) List(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate, &rec.Gender, &rec.ActiveStatus, &rec.Deceased, &customListID, &listName); err != nil {
 			continue
 		}
-		if customListID.Valid {
-			clID := uint32(customListID.Int64)
-			rec.CustomListID = &clID
-			rec.Source = "custom_list:" + listName
-		} else {
-			rec.Source = "sanctions_list"
-		}
+		applyCustomListMeta(&rec, customListID, listName)
 		h.loadPrimaryName(&rec)
 		records = append(records, rec)
 	}
@@ -141,13 +135,7 @@ func (h *RecordsHandler) Show(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if customListID.Valid {
-		clID := uint32(customListID.Int64)
-		rec.CustomListID = &clID
-		rec.Source = "custom_list:" + listName
-	} else {
-		rec.Source = "sanctions_list"
-	}
+	applyCustomListMeta(&rec, customListID, listName)
 
 	h.loadNames(&rec)
 	h.loadDates(&rec)
