@@ -12,8 +12,9 @@ import (
 const batchSize = 2000
 
 type Seeder struct {
-	db      *sql.DB
-	history *seedHistory
+	db       *sql.DB
+	history  *seedHistory
+	feedMeta feedMeta
 }
 
 func New(db *sql.DB) *Seeder {
@@ -54,6 +55,16 @@ func (s *Seeder) Run(jsonPath string) error {
 
 	log.Printf("Loading JSON section index...")
 	indexStart := time.Now()
+
+	if meta, err := readFeedMeta(jsonPath); err != nil {
+		log.Printf("WARN: could not read feed meta: %v", err)
+	} else {
+		s.feedMeta = meta
+		if meta.FeedScope != "" || meta.RecordCount > 0 {
+			log.Printf("Feed meta: feed_scope=%q record_count=%d", meta.FeedScope, meta.RecordCount)
+		}
+	}
+
 	sectionIndex, fromCache, err := loadOrBuildSectionIndex(jsonPath)
 	if err != nil {
 		runErr = fmt.Errorf("index JSON sections: %w", err)
@@ -356,8 +367,11 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 	incomingIDs := make(map[uint32]struct{}, len(existing))
 	insertArgs := make([]interface{}, 0, batchSize*colCount)
 	insertRows := 0
+	updateArgs := make([]interface{}, 0, batchSize*colCount)
+	updateRows := 0
 	count := 0
 	skippedExisting := 0
+	updatedExisting := 0
 
 	flushInserts := func() {
 		if insertRows == 0 {
@@ -368,6 +382,17 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 		}
 		insertArgs = insertArgs[:0]
 		insertRows = 0
+	}
+
+	flushUpdates := func() {
+		if updateRows == 0 {
+			return
+		}
+		if err := s.bulkUpsertRecords(updateArgs, updateRows); err != nil {
+			log.Printf("records update error: %v", err)
+		}
+		updateArgs = updateArgs[:0]
+		updateRows = 0
 	}
 
 	for dec.More() {
@@ -391,6 +416,23 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 
 		if ex, ok := existing[id]; ok {
 			s.classifyRecordChange(id, ex, row, recordType)
+			if recordNeedsUpdate(ex, row) {
+				updateArgs = append(updateArgs,
+					idRaw,
+					str(row, "record_type"),
+					str(row, "action"),
+					str(row, "action_date"),
+					str(row, "gender"),
+					str(row, "active_status"),
+					str(row, "deceased"),
+					str(row, "profile_notes"),
+				)
+				updateRows++
+				updatedExisting++
+				if updateRows >= batchSize {
+					flushUpdates()
+				}
+			}
 			skippedExisting++
 			count++
 			if count%100_000 == 0 {
@@ -429,12 +471,21 @@ func (s *Seeder) seedRecords(dec *json.Decoder) error {
 		}
 	}
 	flushInserts()
+	flushUpdates()
 
-	if err := s.markRecordsRemovedFromFeed(existing, incomingIDs); err != nil {
-		return err
+	if s.isCompleteFeed(len(incomingIDs), len(existing)) {
+		if err := s.markRecordsRemovedFromFeed(existing, incomingIDs); err != nil {
+			return err
+		}
+	} else {
+		log.Printf(
+			"WARN: skipping removed-from-feed inactivation (partial feed: %d incoming vs %d existing, feed_scope=%q)",
+			len(incomingIDs), len(existing), s.feedMeta.FeedScope,
+		)
 	}
 
-	log.Printf("  records: %d in feed (%d already in DB, %d new inserts)", count, skippedExisting, count-skippedExisting)
+	log.Printf("  records: %d in feed (%d existing, %d updated, %d new inserts)",
+		count, skippedExisting, updatedExisting, count-skippedExisting)
 	return nil
 }
 
