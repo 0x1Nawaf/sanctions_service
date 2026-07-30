@@ -37,9 +37,7 @@ func (h *ScreenHandler) Screen(w http.ResponseWriter, r *http.Request) {
 	if req.MinScore < 1 || req.MinScore > 100 {
 		req.MinScore = 50
 	}
-	if req.SearchType == "" {
-		req.SearchType = "individual"
-	}
+	req.SearchType = normalizeSearchType(req.SearchType)
 
 	results, err := h.screenWithScore(req)
 	if err != nil {
@@ -140,6 +138,9 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		if !ok {
 			continue
 		}
+		if !recordMatchesSearchType(rec, req.SearchType) {
+			continue
+		}
 		results = append(results, model.ScreenResult{
 			Record:         rec,
 			Score:          s.score,
@@ -172,14 +173,12 @@ func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCa
 		return nil, err
 	}
 
-	if len(candidates) == 0 {
-		candidates, err = h.fetchLikeCandidates(tokens, searchType)
-		if err != nil {
-			return nil, err
-		}
+	likeCandidates, err := h.fetchLikeCandidates(tokens, searchType)
+	if err != nil {
+		return nil, err
 	}
 
-	return candidates, nil
+	return mergeCandidates(candidates, likeCandidates), nil
 }
 
 func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
@@ -194,14 +193,10 @@ func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType stri
 	}
 	ftQuery := strings.Join(ftTerms, " ")
 
-	typeFilter := ""
+	_ = searchType
+
 	var args []interface{}
 	args = append(args, ftQuery, ftQuery)
-	if searchType == "entity" {
-		typeFilter = "AND sr.record_type = 'Entity'"
-	} else if searchType == "individual" {
-		typeFilter = "AND sr.record_type IN ('Individual', 'Person')"
-	}
 
 	query := fmt.Sprintf(`
 		SELECT sn.record_id,
@@ -210,12 +205,11 @@ func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType stri
 		       MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN NATURAL LANGUAGE MODE) AS relevance
 		FROM sanctions_names sn
 		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
-		WHERE sr.active_status = 'Active'
-		  %s
+		WHERE %s
 		  AND MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN BOOLEAN MODE)
 		ORDER BY relevance DESC
 		LIMIT 300
-	`, typeFilter)
+	`, activeStatusFilterSQL())
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -262,12 +256,7 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) 
 			strings.Join(wrapConditions(conditions), " + "), required)
 	}
 
-	typeFilter := ""
-	if searchType == "entity" {
-		typeFilter = "AND sr.record_type = 'Entity'"
-	} else if searchType == "individual" {
-		typeFilter = "AND sr.record_type IN ('Individual', 'Person')"
-	}
+	_ = searchType
 
 	query := fmt.Sprintf(`
 		SELECT sn.record_id,
@@ -275,11 +264,10 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) 
 		       sn.single_string_name, sn.entity_name, sn.original_script_name
 		FROM sanctions_names sn
 		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
-		WHERE sr.active_status = 'Active'
-		  %s
+		WHERE %s
 		  AND %s
 		LIMIT 300
-	`, typeFilter, whereClause)
+	`, activeStatusFilterSQL(), whereClause)
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -575,4 +563,54 @@ func (h *ScreenHandler) loadRecordAssociations(rec *model.SanctionsRecord) {
 		}
 		rec.Associations = append(rec.Associations, a)
 	}
+}
+
+// normalizeSearchType accepts common client variants (person, individual, entity).
+func normalizeSearchType(searchType string) string {
+	switch strings.ToLower(strings.TrimSpace(searchType)) {
+	case "entity":
+		return "entity"
+	default:
+		return "individual"
+	}
+}
+
+func activeStatusFilterSQL() string {
+	return "LOWER(TRIM(sr.active_status)) = 'active'"
+}
+
+func mergeCandidates(a, b []nameCandidate) []nameCandidate {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]nameCandidate, 0, len(a)+len(b))
+	for _, list := range [][]nameCandidate{a, b} {
+		for _, c := range list {
+			key := fmt.Sprintf("%d:%s", c.recordID, strings.ToLower(c.name))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func recordMatchesSearchType(rec model.SanctionsRecord, searchType string) bool {
+	if rec.CustomListID != nil {
+		return true
+	}
+
+	rt := ""
+	if rec.RecordType.Valid {
+		rt = strings.ToLower(strings.TrimSpace(rec.RecordType.String))
+	}
+
+	if searchType == "entity" {
+		return rt == "entity" || rt == "e"
+	}
+
+	if rt == "" {
+		return true
+	}
+	return rt == "person" || rt == "individual" || rt == "p"
 }
