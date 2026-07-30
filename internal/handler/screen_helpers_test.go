@@ -1,10 +1,7 @@
 package handler
 
 import (
-	"database/sql"
 	"testing"
-
-	"github.com/nnn/sanctions-service/internal/model"
 )
 
 func TestNormalizeSearchType(t *testing.T) {
@@ -26,34 +23,21 @@ func TestNormalizeSearchType(t *testing.T) {
 	}
 }
 
-func TestRecordMatchesSearchType(t *testing.T) {
-	customListID := uint32(1)
-	customRec := model.SanctionsRecord{
-		CustomListID: &customListID,
-		RecordType:   model.NullString{NullString: sql.NullString{String: "Entity", Valid: true}},
+func TestRecordTypeFilterSQL(t *testing.T) {
+	individual := recordTypeFilterSQL("individual")
+	if !containsAll(individual, "person", "individual", "p") {
+		t.Fatalf("individual filter missing person variants: %s", individual)
 	}
-	if !recordMatchesSearchType(customRec, "individual") {
-		t.Fatal("custom list records should always match")
-	}
-
-	personCases := []string{"Person", "person", "Individual", "P"}
-	for _, rt := range personCases {
-		rec := model.SanctionsRecord{
-			RecordType: model.NullString{NullString: sql.NullString{String: rt, Valid: true}},
-		}
-		if !recordMatchesSearchType(rec, "individual") {
-			t.Fatalf("record_type %q should match individual search", rt)
-		}
-		if recordMatchesSearchType(rec, "entity") {
-			t.Fatalf("record_type %q should not match entity search", rt)
-		}
+	if contains(individual, "entity") {
+		t.Fatalf("individual filter must not include entity: %s", individual)
 	}
 
-	entityRec := model.SanctionsRecord{
-		RecordType: model.NullString{NullString: sql.NullString{String: "Entity", Valid: true}},
+	entity := recordTypeFilterSQL("entity")
+	if !containsAll(entity, "entity", "e") {
+		t.Fatalf("entity filter missing entity variants: %s", entity)
 	}
-	if !recordMatchesSearchType(entityRec, "entity") {
-		t.Fatal("Entity records should match entity search")
+	if contains(entity, "person") {
+		t.Fatalf("entity filter must not include person: %s", entity)
 	}
 }
 
@@ -67,4 +51,22 @@ func TestMergeCandidates(t *testing.T) {
 	if len(merged) != 2 {
 		t.Fatalf("mergeCandidates() len = %d, want 2", len(merged))
 	}
+}
+
+func containsAll(s string, parts ...string) bool {
+	for _, part := range parts {
+		if !contains(s, part) {
+			return false
+		}
+	}
+	return true
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

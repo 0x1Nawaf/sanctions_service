@@ -138,9 +138,6 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		if !ok {
 			continue
 		}
-		if !recordMatchesSearchType(rec, req.SearchType) {
-			continue
-		}
 		results = append(results, model.ScreenResult{
 			Record:         rec,
 			Score:          s.score,
@@ -193,8 +190,7 @@ func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType stri
 	}
 	ftQuery := strings.Join(ftTerms, " ")
 
-	_ = searchType
-
+	typeFilter := recordTypeFilterSQL(searchType)
 	var args []interface{}
 	args = append(args, ftQuery, ftQuery)
 
@@ -206,10 +202,11 @@ func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType stri
 		FROM sanctions_names sn
 		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
 		WHERE %s
+		  %s
 		  AND MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN BOOLEAN MODE)
 		ORDER BY relevance DESC
 		LIMIT 300
-	`, activeStatusFilterSQL())
+	`, activeStatusFilterSQL(), typeFilter)
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -256,7 +253,7 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) 
 			strings.Join(wrapConditions(conditions), " + "), required)
 	}
 
-	_ = searchType
+	typeFilter := recordTypeFilterSQL(searchType)
 
 	query := fmt.Sprintf(`
 		SELECT sn.record_id,
@@ -265,9 +262,10 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) 
 		FROM sanctions_names sn
 		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
 		WHERE %s
+		  %s
 		  AND %s
 		LIMIT 300
-	`, activeStatusFilterSQL(), whereClause)
+	`, activeStatusFilterSQL(), typeFilter, whereClause)
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -579,6 +577,15 @@ func activeStatusFilterSQL() string {
 	return "LOWER(TRIM(sr.active_status)) = 'active'"
 }
 
+// recordTypeFilterSQL restricts candidate search to the correct record class.
+// Uses LOWER/TRIM so Person, person, P, Individual all match individual screening.
+func recordTypeFilterSQL(searchType string) string {
+	if searchType == "entity" {
+		return "AND LOWER(TRIM(sr.record_type)) IN ('entity', 'e')"
+	}
+	return "AND LOWER(TRIM(sr.record_type)) IN ('person', 'individual', 'p')"
+}
+
 func mergeCandidates(a, b []nameCandidate) []nameCandidate {
 	seen := make(map[string]bool, len(a)+len(b))
 	out := make([]nameCandidate, 0, len(a)+len(b))
@@ -593,24 +600,4 @@ func mergeCandidates(a, b []nameCandidate) []nameCandidate {
 		}
 	}
 	return out
-}
-
-func recordMatchesSearchType(rec model.SanctionsRecord, searchType string) bool {
-	if rec.CustomListID != nil {
-		return true
-	}
-
-	rt := ""
-	if rec.RecordType.Valid {
-		rt = strings.ToLower(strings.TrimSpace(rec.RecordType.String))
-	}
-
-	if searchType == "entity" {
-		return rt == "entity" || rt == "e"
-	}
-
-	if rt == "" {
-		return true
-	}
-	return rt == "person" || rt == "individual" || rt == "p"
 }
