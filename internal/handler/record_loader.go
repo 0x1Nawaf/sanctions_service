@@ -20,10 +20,10 @@ func uint32INClause(ids []uint32) (string, []interface{}) {
 
 // batchLoadOptions controls how related record data is loaded in bulk.
 type batchLoadOptions struct {
-	nameLimit    int
-	imageLimit   int
-	slim         bool
-	skipDetails  bool
+	nameLimit   int
+	imageLimit  int
+	slim        bool
+	skipDetails bool
 }
 
 // loadRecordsBatch loads sanctions records and related data using a fixed number

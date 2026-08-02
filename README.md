@@ -132,6 +132,16 @@ After changing `ngram_token_size`, run migrations including `006_ngram_fulltext.
 | RAM | **512 MB–1 GB** | Go process; DB holds the data. |
 | `DB_MAX_OPEN_CONNS` | **50** (default) | Raise if many concurrent screens; keep below MySQL `max_connections`. |
 
+### Verifying screening uses the FULLTEXT index
+
+`sanctions_names` carries two FULLTEXT indexes over the same column list
+(`sanctions_names_fulltext` with the default word parser, `sanctions_names_ngram_fulltext`
+with the ngram parser), so every candidate query pins one with `FORCE INDEX` and
+filters on `MATCH ... AGAINST` in the **WHERE** clause. `EXPLAIN` on those queries
+must report `type: fulltext` for `sn`. If it reports `ALL`, the index is not being
+used and each screen degrades to a full scan of `sanctions_names` — tens of seconds
+per request on a multi-million-row feed.
+
 ### Optional (recommended at scale)
 
 - **Slow query log** — `long_query_time=1`, inspect FT/ngram queries.

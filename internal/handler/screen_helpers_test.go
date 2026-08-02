@@ -1,72 +1,102 @@
 package handler
 
 import (
+	"strings"
 	"testing"
 )
 
-func TestNormalizeSearchType(t *testing.T) {
-	tests := map[string]string{
-		"":           "individual",
-		"individual": "individual",
-		"Individual": "individual",
-		"person":     "individual",
-		"Person":     "individual",
-		"entity":     "entity",
-		"Entity":     "entity",
-		"unknown":    "individual",
-	}
-
-	for input, want := range tests {
-		if got := normalizeSearchType(input); got != want {
-			t.Errorf("normalizeSearchType(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
 func TestRecordTypeFilterSQL(t *testing.T) {
 	individual := recordTypeFilterSQL("individual")
-	if !containsAll(individual, "person", "individual", "p") {
+	if !strings.Contains(individual, "'Individual'") || !strings.Contains(individual, "'Person'") {
 		t.Fatalf("individual filter missing person variants: %s", individual)
 	}
-	if contains(individual, "entity") {
+	if strings.Contains(individual, "Entity") {
 		t.Fatalf("individual filter must not include entity: %s", individual)
 	}
 
 	entity := recordTypeFilterSQL("entity")
-	if !containsAll(entity, "entity", "e") {
-		t.Fatalf("entity filter missing entity variants: %s", entity)
+	if !strings.Contains(entity, "'Entity'") {
+		t.Fatalf("entity filter missing entity: %s", entity)
 	}
-	if contains(entity, "person") {
+	if strings.Contains(entity, "Person") {
 		t.Fatalf("entity filter must not include person: %s", entity)
 	}
-}
 
-func TestMergeCandidates(t *testing.T) {
-	a := []nameCandidate{{recordID: 1, name: "Nasser Ahmed kamel ali"}}
-	b := []nameCandidate{
-		{recordID: 1, name: "Nasser Ahmed kamel ali"},
-		{recordID: 2, name: "Nasser Bin Rashid Al Nuaimi"},
-	}
-	merged := mergeCandidates(a, b)
-	if len(merged) != 2 {
-		t.Fatalf("mergeCandidates() len = %d, want 2", len(merged))
+	if got := recordTypeFilterSQL(""); got != "" {
+		t.Fatalf("empty search type filter = %q, want empty", got)
 	}
 }
 
-func containsAll(s string, parts ...string) bool {
-	for _, part := range parts {
-		if !contains(s, part) {
-			return false
+func TestBuildBooleanFTQuery(t *testing.T) {
+	got := buildBooleanFTQuery([]string{"nasser", "ahmed", "kamel", "ali"})
+	want := "+nasser* +ahmed* kamel* ali*"
+	if got != want {
+		t.Fatalf("buildBooleanFTQuery() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildNgramFTQuery(t *testing.T) {
+	got := buildNgramFTQuery([]string{"nasser", "ahmed", "kamel"})
+	want := "+nasser +ahmed kamel"
+	if got != want {
+		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
+	}
+}
+
+// The candidate lookup must filter on MATCH in the WHERE clause. Moving it to a
+// selected column plus HAVING makes MySQL scan all of sanctions_names instead of
+// using the FULLTEXT index, which turns a sub-second screen into ~50 seconds.
+func TestNameSearchQueryFiltersOnMatchInWhere(t *testing.T) {
+	query := nameSearchQuery(wordFulltextIndex, recordTypeFilterSQL("individual"))
+
+	if strings.Contains(strings.ToUpper(query), "HAVING") {
+		t.Fatalf("query must not filter relevance with HAVING:\n%s", query)
+	}
+
+	wherePos := strings.Index(query, "WHERE")
+	if wherePos < 0 {
+		t.Fatalf("query has no WHERE clause:\n%s", query)
+	}
+	if !strings.Contains(query[wherePos:], "MATCH(") {
+		t.Fatalf("WHERE clause must contain the MATCH predicate:\n%s", query)
+	}
+}
+
+func TestNameSearchQueryPinsFulltextIndex(t *testing.T) {
+	// Both FULLTEXT indexes cover the same columns, so each query has to name
+	// the one it wants.
+	word := nameSearchQuery(wordFulltextIndex, "")
+	if !strings.Contains(word, "FORCE INDEX ("+wordFulltextIndex+")") {
+		t.Fatalf("word query does not pin %s:\n%s", wordFulltextIndex, word)
+	}
+	if strings.Contains(word, ngramFulltextIndex) {
+		t.Fatalf("word query must not reference the ngram index:\n%s", word)
+	}
+
+	ngram := nameSearchQuery(ngramFulltextIndex, "")
+	if !strings.Contains(ngram, "FORCE INDEX ("+ngramFulltextIndex+")") {
+		t.Fatalf("ngram query does not pin %s:\n%s", ngramFulltextIndex, ngram)
+	}
+}
+
+func TestNameSearchQueryPlaceholderCount(t *testing.T) {
+	// fetchFulltextCandidates / fetchNgramCandidates pass the search string
+	// twice: once for the selected relevance, once for the WHERE predicate.
+	query := nameSearchQuery(wordFulltextIndex, recordTypeFilterSQL("entity"))
+	if got := strings.Count(query, "?"); got != 2 {
+		t.Fatalf("placeholder count = %d, want 2:\n%s", got, query)
+	}
+}
+
+func TestTokenizeSearchNameDropsShortAndPunctuation(t *testing.T) {
+	got := tokenizeSearchName("Nouf Mohammed M. Alkahtani")
+	want := []string{"Nouf", "Mohammed", "Alkahtani"}
+	if len(got) != len(want) {
+		t.Fatalf("tokenizeSearchName() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tokenizeSearchName() = %v, want %v", got, want)
 		}
 	}
-	return true
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

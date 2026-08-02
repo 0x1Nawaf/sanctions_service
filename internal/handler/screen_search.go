@@ -42,46 +42,59 @@ func buildNgramFTQuery(tokens []string) string {
 	return strings.Join(ftTerms, " ")
 }
 
-func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
-	ftQuery := buildBooleanFTQuery(tokens)
-	typeFilter := recordTypeFilterSQL(searchType)
+const (
+	nameSearchColumns = "sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name"
+	nameSearchLimit   = 300
 
-	query := fmt.Sprintf(`
+	wordFulltextIndex  = "sanctions_names_fulltext"
+	ngramFulltextIndex = "sanctions_names_ngram_fulltext"
+)
+
+// nameSearchQuery builds the candidate lookup against one of the FULLTEXT
+// indexes on sanctions_names.
+//
+// The MATCH predicate has to sit in the WHERE clause: that is the only form
+// MySQL can serve from the FULLTEXT index. Selecting MATCH as a column and
+// filtering it with HAVING instead forces a full scan of sanctions_names plus a
+// join per row, which costs tens of seconds on a multi-million-row feed.
+//
+// Both copies of the expression use BOOLEAN MODE so MySQL treats them as one
+// function and runs a single full-text search, and ORDER BY on its alias lets
+// the optimizer stop reading once LIMIT rows have passed the filters.
+//
+// ftIndex is pinned with FORCE INDEX because the word-parser and ngram indexes
+// cover an identical column list, so MATCH alone does not identify which one to
+// use.
+func nameSearchQuery(ftIndex, typeFilter string) string {
+	matchExpr := fmt.Sprintf("MATCH(%s) AGAINST(? IN BOOLEAN MODE)", nameSearchColumns)
+
+	return fmt.Sprintf(`
 		SELECT sn.record_id,
 		       sn.first_name, sn.middle_name, sn.surname,
 		       sn.single_string_name, sn.entity_name, sn.original_script_name,
-		       MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN BOOLEAN MODE) AS relevance
-		FROM sanctions_names sn
+		       %s AS relevance
+		FROM sanctions_names sn FORCE INDEX (%s)
 		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
-		WHERE sr.active_status = 'Active'
+		WHERE %s
+		  AND sr.active_status = 'Active'
 		  %s
-		HAVING relevance > 0
 		ORDER BY relevance DESC
-		LIMIT 300
-	`, typeFilter)
+		LIMIT %d
+	`, matchExpr, ftIndex, matchExpr, typeFilter, nameSearchLimit)
+}
 
-	return h.queryNameCandidates(query, []interface{}{ftQuery})
+func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
+	ftQuery := buildBooleanFTQuery(tokens)
+	query := nameSearchQuery(wordFulltextIndex, recordTypeFilterSQL(searchType))
+
+	return h.queryNameCandidates(query, []interface{}{ftQuery, ftQuery})
 }
 
 func (h *ScreenHandler) fetchNgramCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
 	ftQuery := buildNgramFTQuery(tokens)
-	typeFilter := recordTypeFilterSQL(searchType)
+	query := nameSearchQuery(ngramFulltextIndex, recordTypeFilterSQL(searchType))
 
-	query := fmt.Sprintf(`
-		SELECT sn.record_id,
-		       sn.first_name, sn.middle_name, sn.surname,
-		       sn.single_string_name, sn.entity_name, sn.original_script_name,
-		       MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN BOOLEAN MODE) AS relevance
-		FROM sanctions_names sn FORCE INDEX (sanctions_names_ngram_fulltext)
-		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
-		WHERE sr.active_status = 'Active'
-		  %s
-		HAVING relevance > 0
-		ORDER BY relevance DESC
-		LIMIT 300
-	`, typeFilter)
-
-	return h.queryNameCandidates(query, []interface{}{ftQuery})
+	return h.queryNameCandidates(query, []interface{}{ftQuery, ftQuery})
 }
 
 func (h *ScreenHandler) queryNameCandidates(query string, args []interface{}) ([]nameCandidate, error) {
