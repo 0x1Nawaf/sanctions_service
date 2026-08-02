@@ -85,7 +85,12 @@ Each server log line for screening includes phase timings (`fetch`, `expand`, `s
 
 ```
 GET /api/records?page=1&per_page=25
+GET /api/records?first_name=nouf&last_name=alkahtani&record_type=Individual&active_status=Active
 ```
+
+Filters: `first_name`, `last_name` (matched against the primary name), `record_type`, `active_status`.
+
+`first_name` and `last_name` are **prefix** matches — `alkahtani` finds `Alkahtani`, but `kahtani` does not. This is what lets migration `008_name_prefix_indexes.sql` serve them as an index range scan instead of scanning every name row. For fuzzy, mid-word, alias, or transliteration matching, use `POST /api/screen` instead; that is the endpoint built for recall.
 
 **Get record**
 
@@ -118,6 +123,7 @@ These are **server/DB settings**, not application code. Minimum recommendations 
 | Setting | Minimum | Notes |
 |---------|---------|--------|
 | `ngram_token_size` | `2` | Required for migration `006_ngram_fulltext.sql`. Add to `my.cnf`: `[mysqld]` → `ngram_token_size=2`, then restart. |
+| `innodb_ft_enable_stopword` | `OFF` | The default stopword list contains two-letter words (`as`, `in`, `is`, `of`, `on`, `or`, `to`, …). At `ngram_token_size=2` those are exactly the bigrams inside ordinary names — `Nasser` tokenizes to `na as ss se er`, and `as` would be dropped — so the ngram fallback silently misses names. Set this OFF and rebuild `sanctions_names_ngram_fulltext`. |
 | RAM | **8 GB+** | 16 GB+ preferred for FULLTEXT on multi‑million `sanctions_names` rows. |
 | Storage | **SSD** | LIKE/ngram/FULLTEXT on HDD will be slow. |
 | `innodb_buffer_pool_size` | **50–70% of RAM** | e.g. 4G on an 8G box. |
