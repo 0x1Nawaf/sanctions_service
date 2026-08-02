@@ -200,9 +200,32 @@ type SanctionsAssociation struct {
 // API request/response types
 
 type ScreenRequest struct {
-	Name       string `json:"name"`
-	SearchType string `json:"search_type"`
-	MinScore   int    `json:"min_score"`
+	Name            string `json:"name"`
+	SearchType      string `json:"search_type"`
+	MinScore        int    `json:"min_score"`
+	IncludeNotes    bool   `json:"include_notes"`
+	IncludeDetails  bool   `json:"include_details"`
+}
+
+type BatchScreenRequest struct {
+	Names          []string `json:"names"`
+	SearchType     string   `json:"search_type"`
+	MinScore       int      `json:"min_score"`
+	IncludeNotes   bool     `json:"include_notes"`
+	IncludeDetails bool     `json:"include_details"`
+}
+
+type BatchScreenResult struct {
+	Query    string         `json:"query"`
+	MinScore int            `json:"min_score"`
+	Total    int            `json:"total"`
+	Results  []ScreenResult `json:"results"`
+	Error    string         `json:"error,omitempty"`
+}
+
+type BatchScreenResponse struct {
+	Total   int                 `json:"total"`
+	Results []BatchScreenResult `json:"results"`
 }
 
 type ScreenResult struct {

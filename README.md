@@ -20,14 +20,14 @@ go build -o bin/seeder ./cmd/seeder
 ```bash
 # Create database
 mysql -u root -p -e "CREATE DATABASE sanctions CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-mysql -u root -p sanctions < migrations/001_schema.sql
-mysql -u root -p sanctions < migrations/004_seed_history.sql
-mysql -u root -p sanctions < migrations/005_seed_run_record_details.sql
+for f in migrations/*.sql; do mysql -u root -p sanctions < "$f"; done
 
 # Configure
 cp .env.example .env
 # Edit .env with your DB credentials
 ```
+
+Apply migration `006_ngram_fulltext.sql` before production screening. It requires `ngram_token_size=2` in MySQL (see **Infrastructure** below).
 
 ## Seed
 
@@ -55,9 +55,31 @@ POST /api/screen
 {
   "name": "Victor Stalony Brown",
   "search_type": "individual",
-  "min_score": 60
+  "min_score": 60,
+  "include_notes": false,
+  "include_details": false
 }
 ```
+
+- `include_notes` (default `false`) — load `profile_notes` in each match (use `GET /api/records/{id}` for full detail).
+- `include_details` (default `false`) — load dates, countries, images, descriptions, associations.
+
+**Batch screen (up to 50 names)**
+
+```
+POST /api/screen/batch
+```
+```json
+{
+  "names": ["John Smith", "Jane Doe"],
+  "search_type": "individual",
+  "min_score": 60,
+  "include_notes": false,
+  "include_details": false
+}
+```
+
+Each server log line for screening includes phase timings (`fetch`, `expand`, `score`, `like_retry`, `hydrate`, `total`).
 
 **List records**
 
@@ -86,3 +108,42 @@ See [docs/INTEGRATION_HISTORICAL_UPDATES.md](docs/INTEGRATION_HISTORICAL_UPDATES
 ```
 GET /health
 ```
+
+## Infrastructure (minimum for production screening)
+
+These are **server/DB settings**, not application code. Minimum recommendations for a Dow Jones–scale feed (millions of records):
+
+### MySQL 8.0+
+
+| Setting | Minimum | Notes |
+|---------|---------|--------|
+| `ngram_token_size` | `2` | Required for migration `006_ngram_fulltext.sql`. Add to `my.cnf`: `[mysqld]` → `ngram_token_size=2`, then restart. |
+| RAM | **8 GB+** | 16 GB+ preferred for FULLTEXT on multi‑million `sanctions_names` rows. |
+| Storage | **SSD** | LIKE/ngram/FULLTEXT on HDD will be slow. |
+| `innodb_buffer_pool_size` | **50–70% of RAM** | e.g. 4G on an 8G box. |
+
+After changing `ngram_token_size`, run migrations including `006_ngram_fulltext.sql`.
+
+### Application server (Go API)
+
+| Resource | Minimum | Notes |
+|----------|---------|--------|
+| CPU | **2 vCPU** | Scoring is CPU-heavy; 4+ vCPU under concurrent load. |
+| RAM | **512 MB–1 GB** | Go process; DB holds the data. |
+| `DB_MAX_OPEN_CONNS` | **50** (default) | Raise if many concurrent screens; keep below MySQL `max_connections`. |
+
+### Optional (recommended at scale)
+
+- **Slow query log** — `long_query_time=1`, inspect FT/ngram queries.
+- **MySQL `max_connections`** ≥ app pool × replica count + headroom (e.g. 100+).
+- **Do not expose** `ENABLE_PPROF=true` on `:6060` to the public internet.
+- **Read replica** — only if DB CPU/disk is saturated after app optimizations; screening is read-heavy.
+- Set `SCREEN_USE_LIKE_FALLBACK=true` only if ngram index cannot be created (legacy fallback; slow).
+
+### Seeder host (one-off / scheduled loads)
+
+| Resource | Minimum |
+|----------|---------|
+| RAM | **8 GB+** |
+| Disk | **2× feed size** (~30 GB for a 15 GB JSON) |
+| DB write timeouts | Seeder uses 7200s read/write timeouts automatically |

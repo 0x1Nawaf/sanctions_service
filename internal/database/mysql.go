@@ -10,7 +10,7 @@ import (
 )
 
 func Connect(cfg *config.Config) (*sql.DB, error) {
-	return openMySQL(cfg.DSN(), 25, 10, 5*time.Minute)
+	return openMySQL(cfg.DSN(), cfg.DBMaxOpenConns, cfg.DBMaxIdleConns, cfg.DBConnMaxLifetime)
 }
 
 // ConnectForSeeder uses a single long-lived connection suitable for multi-minute transactions.
@@ -26,7 +26,9 @@ func openMySQL(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Duration) 
 
 	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(maxIdle)
-	db.SetConnMaxLifetime(connMaxLifetime)
+	if connMaxLifetime > 0 {
+		db.SetConnMaxLifetime(connMaxLifetime)
+	}
 
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)

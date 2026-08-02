@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -20,11 +21,20 @@ func main() {
 		log.Fatalf("Database connection failed: %v", err)
 	}
 	defer db.Close()
-	log.Println("Connected to database")
+	log.Printf("Connected to database (pool max_open=%d max_idle=%d)", cfg.DBMaxOpenConns, cfg.DBMaxIdleConns)
+
+	if cfg.EnablePprof {
+		go func() {
+			log.Println("pprof listening on :6060")
+			if err := http.ListenAndServe(":6060", nil); err != nil {
+				log.Printf("pprof server failed: %v", err)
+			}
+		}()
+	}
 
 	healthH := handler.NewHealthHandler(db)
 	recordsH := handler.NewRecordsHandler(db)
-	screenH := handler.NewScreenHandler(db)
+	screenH := handler.NewScreenHandler(db, cfg.ScreenUseLike)
 	customListH := handler.NewCustomListHandler(db)
 	historicalH := handler.NewHistoricalUpdatesHandler(db)
 
@@ -38,6 +48,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(authmw.APIKeyAuth(cfg.APIKey))
 		r.Post("/api/screen", screenH.Screen)
+		r.Post("/api/screen/batch", screenH.ScreenBatch)
 		r.Get("/api/records", recordsH.List)
 		r.Get("/api/records/{id}", recordsH.Show)
 		r.Post("/api/custom-lists", customListH.Upload)

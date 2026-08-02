@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -318,8 +319,22 @@ func levenshteinDistance(a, b []rune) int {
 		return la
 	}
 
-	prev := make([]int, lb+1)
-	curr := make([]int, lb+1)
+	need := lb + 1
+	prev := levenshteinBufPool.Get().([]int)
+	curr := levenshteinBufPool.Get().([]int)
+	if len(prev) < need {
+		prev = make([]int, need)
+	}
+	if len(curr) < need {
+		curr = make([]int, need)
+	}
+	prev = prev[:need]
+	curr = curr[:need]
+
+	defer func() {
+		levenshteinBufPool.Put(prev[:cap(prev)])
+		levenshteinBufPool.Put(curr[:cap(curr)])
+	}()
 
 	for j := 0; j <= lb; j++ {
 		prev[j] = j
@@ -348,6 +363,13 @@ func levenshteinDistance(a, b []rune) int {
 	}
 
 	return prev[lb]
+}
+
+var levenshteinBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]int, 128)
+		return buf
+	},
 }
 
 func normalize(s string) string {

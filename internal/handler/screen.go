@@ -8,20 +8,33 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/nnn/sanctions-service/internal/model"
 	"github.com/nnn/sanctions-service/internal/scoring"
 )
 
+const maxBatchScreenNames = 50
+
 type ScreenHandler struct {
-	db *sql.DB
+	db              *sql.DB
+	useLikeFallback bool
 }
 
-func NewScreenHandler(db *sql.DB) *ScreenHandler {
-	return &ScreenHandler{db: db}
+func NewScreenHandler(db *sql.DB, useLikeFallback bool) *ScreenHandler {
+	return &ScreenHandler{db: db, useLikeFallback: useLikeFallback}
 }
 
 var sanitizeRe = regexp.MustCompile(`[+\-><()~*"@.,;:!?']+`)
+
+func normalizeScreenRequest(req *model.ScreenRequest) {
+	if req.MinScore < 1 || req.MinScore > 100 {
+		req.MinScore = 50
+	}
+	if req.SearchType == "" {
+		req.SearchType = "individual"
+	}
+}
 
 func (h *ScreenHandler) Screen(w http.ResponseWriter, r *http.Request) {
 	var req model.ScreenRequest
@@ -34,12 +47,7 @@ func (h *ScreenHandler) Screen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if req.MinScore < 1 || req.MinScore > 100 {
-		req.MinScore = 50
-	}
-	if req.SearchType == "" {
-		req.SearchType = "individual"
-	}
+	normalizeScreenRequest(&req)
 
 	results, err := h.screenWithScore(req)
 	if err != nil {
@@ -55,90 +63,140 @@ func (h *ScreenHandler) Screen(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *ScreenHandler) ScreenBatch(w http.ResponseWriter, r *http.Request) {
+	var req model.BatchScreenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Names) == 0 {
+		writeError(w, http.StatusBadRequest, "names is required")
+		return
+	}
+	if len(req.Names) > maxBatchScreenNames {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("names exceeds maximum of %d", maxBatchScreenNames))
+		return
+	}
+
+	screenReq := model.ScreenRequest{
+		SearchType:     req.SearchType,
+		MinScore:       req.MinScore,
+		IncludeNotes:   req.IncludeNotes,
+		IncludeDetails: req.IncludeDetails,
+	}
+	normalizeScreenRequest(&screenReq)
+
+	batchResults := make([]model.BatchScreenResult, 0, len(req.Names))
+	for _, name := range req.Names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			batchResults = append(batchResults, model.BatchScreenResult{
+				Query: name,
+				Error: "name is required",
+			})
+			continue
+		}
+		screenReq.Name = name
+		results, err := h.screenWithScore(screenReq)
+		if err != nil {
+			batchResults = append(batchResults, model.BatchScreenResult{
+				Query:    name,
+				MinScore: screenReq.MinScore,
+				Error:    "screening failed",
+			})
+			continue
+		}
+		batchResults = append(batchResults, model.BatchScreenResult{
+			Query:    name,
+			MinScore: screenReq.MinScore,
+			Total:    len(results),
+			Results:  results,
+		})
+	}
+
+	writeJSON(w, model.BatchScreenResponse{
+		Total:   len(batchResults),
+		Results: batchResults,
+	})
+}
+
 type nameCandidate struct {
 	recordID uint32
 	name     string
 }
 
 func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.ScreenResult, error) {
-	candidates, err := h.fetchCandidates(req.Name, req.SearchType)
+	start := time.Now()
+	var timings screenPhaseTimings
+	initialCandidateCount := 0
+	expandedRecordCount := 0
+	usedLike := false
+	resultCount := 0
+
+	defer func() {
+		timings.total = time.Since(start)
+		logScreenTimings(req.Name, req.SearchType, timings, initialCandidateCount, expandedRecordCount, resultCount, usedLike)
+	}()
+
+	t0 := time.Now()
+	candidates, usedFallback, err := h.fetchCandidates(req.Name, req.SearchType)
+	timings.fetchCandidates = time.Since(t0)
 	if err != nil {
 		return nil, err
 	}
+	initialCandidateCount = len(candidates)
 
-	// Collect record IDs from initial search hits, then fetch ALL name rows
-	// for those records. A FULLTEXT/LIKE match may only hit one name row per
-	// record, but the best-scoring variant could be on a different row (AKA,
-	// alternate transliteration, etc.).
-	recordIDs := make(map[uint32]bool, len(candidates))
-	for _, c := range candidates {
-		recordIDs[c.recordID] = true
-	}
-	allCandidates, err := h.fetchAllNamesForRecords(recordIDs)
-	if err != nil {
-		return nil, err
-	}
-	candidates = append(candidates, allCandidates...)
+	seen := make(map[string]bool)
+	markCandidatesSeen(seen, candidates)
 
-	type scored struct {
-		recordID uint32
-		score    int
-		name     string
-	}
+	bestByRecord := make(map[uint32]recordScore)
+	t0 = time.Now()
+	mergeCandidateScores(bestByRecord, candidates, req.Name, req.SearchType, req.MinScore)
 
-	bestByRecord := make(map[uint32]scored)
-	for _, c := range candidates {
-		var s int
-		if req.SearchType == "entity" {
-			s = scoring.ScoreEntityName(req.Name, c.name)
-		} else {
-			s = scoring.ScoreName(req.Name, c.name)
-		}
-		if s < req.MinScore {
-			continue
-		}
-		if existing, ok := bestByRecord[c.recordID]; !ok || s > existing.score {
-			bestByRecord[c.recordID] = scored{recordID: c.recordID, score: s, name: c.name}
-		}
-	}
-
-	if len(bestByRecord) == 0 {
-		likeCandidates, err := h.fetchLikeCandidates(tokenizeSearchName(req.Name), req.SearchType)
+	preliminary := preliminaryScores(candidates, req.Name, req.SearchType)
+	expandIDs := selectRecordIDsForAliasExpansion(preliminary, req.MinScore)
+	if len(expandIDs) > 0 {
+		expandedRecordCount = len(expandIDs)
+		tExpand := time.Now()
+		expanded, err := h.fetchAllNamesForRecords(expandIDs)
+		timings.expandNames = time.Since(tExpand)
 		if err != nil {
 			return nil, err
 		}
-		if len(likeCandidates) > 0 {
-			recordIDs := make(map[uint32]bool, len(likeCandidates))
-			for _, c := range likeCandidates {
-				recordIDs[c.recordID] = true
-			}
-			allCandidates, err := h.fetchAllNamesForRecords(recordIDs)
-			if err != nil {
-				return nil, err
-			}
-			likeCandidates = append(likeCandidates, allCandidates...)
-			for _, c := range likeCandidates {
-				var s int
-				if req.SearchType == "entity" {
-					s = scoring.ScoreEntityName(req.Name, c.name)
-				} else {
-					s = scoring.ScoreName(req.Name, c.name)
+		mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(seen, expanded), req.Name, req.SearchType, req.MinScore)
+		markCandidatesSeen(seen, expanded)
+	}
+	timings.score = time.Since(t0)
+
+	if len(bestByRecord) == 0 && !usedFallback {
+		t0 = time.Now()
+		fallbackCandidates, fallbackUsedLike, err := h.fetchFallbackCandidates(tokenizeSearchName(req.Name), req.SearchType)
+		if err != nil {
+			return nil, err
+		}
+		if len(fallbackCandidates) > 0 {
+			usedLike = fallbackUsedLike
+			likePreliminary := preliminaryScores(fallbackCandidates, req.Name, req.SearchType)
+			likeExpandIDs := selectRecordIDsForAliasExpansion(likePreliminary, req.MinScore)
+			mergeCandidateScores(bestByRecord, fallbackCandidates, req.Name, req.SearchType, req.MinScore)
+			fallbackSeen := make(map[string]bool)
+			markCandidatesSeen(fallbackSeen, fallbackCandidates)
+			if len(likeExpandIDs) > 0 {
+				expanded, err := h.fetchAllNamesForRecords(likeExpandIDs)
+				if err != nil {
+					return nil, err
 				}
-				if s < req.MinScore {
-					continue
-				}
-				if existing, ok := bestByRecord[c.recordID]; !ok || s > existing.score {
-					bestByRecord[c.recordID] = scored{recordID: c.recordID, score: s, name: c.name}
-				}
+				mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(fallbackSeen, expanded), req.Name, req.SearchType, req.MinScore)
 			}
 		}
+		timings.likeRetry = time.Since(t0)
 	}
 
 	if len(bestByRecord) == 0 {
 		return []model.ScreenResult{}, nil
 	}
 
-	sortedResults := make([]scored, 0, len(bestByRecord))
+	sortedResults := make([]recordScore, 0, len(bestByRecord))
 	for _, s := range bestByRecord {
 		sortedResults = append(sortedResults, s)
 	}
@@ -156,7 +214,9 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		ids[i] = s.recordID
 	}
 
-	records, err := h.loadRecords(ids)
+	t0 = time.Now()
+	records, err := h.loadRecordsForScreen(ids, req)
+	timings.hydrate = time.Since(t0)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +241,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		})
 	}
 
+	resultCount = len(results)
 	return results, nil
 }
 
@@ -196,81 +257,22 @@ func tokenizeSearchName(searchName string) []string {
 	return tokens
 }
 
-func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCandidate, error) {
+func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCandidate, bool, error) {
 	tokens := tokenizeSearchName(searchName)
 	if len(tokens) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	candidates, err := h.fetchFulltextCandidates(tokens, searchType)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if len(candidates) > 0 {
+		return candidates, false, nil
 	}
 
-	if len(candidates) == 0 {
-		candidates, err = h.fetchLikeCandidates(tokens, searchType)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return candidates, nil
-}
-
-func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
-	required := (len(tokens) + 1) / 2
-	ftTerms := make([]string, len(tokens))
-	for i, t := range tokens {
-		if i < required {
-			ftTerms[i] = "+" + t + "*"
-		} else {
-			ftTerms[i] = t + "*"
-		}
-	}
-	ftQuery := strings.Join(ftTerms, " ")
-
-	typeFilter := ""
-	var args []interface{}
-	args = append(args, ftQuery, ftQuery)
-	if searchType == "entity" {
-		typeFilter = "AND sr.record_type = 'Entity'"
-	} else if searchType == "individual" {
-		typeFilter = "AND sr.record_type IN ('Individual', 'Person')"
-	}
-
-	query := fmt.Sprintf(`
-		SELECT sn.record_id,
-		       sn.first_name, sn.middle_name, sn.surname,
-		       sn.single_string_name, sn.entity_name, sn.original_script_name,
-		       MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN NATURAL LANGUAGE MODE) AS relevance
-		FROM sanctions_names sn
-		INNER JOIN sanctions_records sr ON sr.id = sn.record_id
-		WHERE sr.active_status = 'Active'
-		  %s
-		  AND MATCH(sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name) AGAINST(? IN BOOLEAN MODE)
-		ORDER BY relevance DESC
-		LIMIT 300
-	`, typeFilter)
-
-	rows, err := h.db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("fulltext query: %w", err)
-	}
-	defer rows.Close()
-
-	var candidates []nameCandidate
-	for rows.Next() {
-		var recordID uint32
-		var firstName, middleName, surname, singleStringName, entityName, originalScriptName sql.NullString
-		var relevance float64
-		if err := rows.Scan(&recordID, &firstName, &middleName, &surname,
-			&singleStringName, &entityName, &originalScriptName, &relevance); err != nil {
-			continue
-		}
-		candidates = append(candidates, buildNameCandidates(recordID, firstName, middleName, surname, singleStringName, entityName, originalScriptName)...)
-	}
-
-	return candidates, nil
+	fallback, _, err := h.fetchFallbackCandidates(tokens, searchType)
+	return fallback, true, err
 }
 
 func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
@@ -297,12 +299,7 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) 
 			strings.Join(wrapConditions(conditions), " + "), required)
 	}
 
-	typeFilter := ""
-	if searchType == "entity" {
-		typeFilter = "AND sr.record_type = 'Entity'"
-	} else if searchType == "individual" {
-		typeFilter = "AND sr.record_type IN ('Individual', 'Person')"
-	}
+	typeFilter := recordTypeFilterSQL(searchType)
 
 	query := fmt.Sprintf(`
 		SELECT sn.record_id,
@@ -344,8 +341,6 @@ func wrapConditions(conditions []string) []string {
 	return wrapped
 }
 
-// buildNameCandidates produces scoring candidates from every non-empty name
-// representation in a sanctions_names row, so the scorer can pick the best.
 func buildNameCandidates(recordID uint32, firstName, middleName, surname, singleStringName, entityName, originalScriptName sql.NullString) []nameCandidate {
 	var candidates []nameCandidate
 	seen := make(map[string]bool)
@@ -367,7 +362,6 @@ func buildNameCandidates(recordID uint32, firstName, middleName, surname, single
 		add(entityName.String)
 	}
 
-	// Structured name (first + middle + surname) â the most complete representation
 	var parts []string
 	if firstName.Valid && firstName.String != "" {
 		parts = append(parts, firstName.String)
@@ -387,7 +381,6 @@ func buildNameCandidates(recordID uint32, firstName, middleName, surname, single
 	}
 	if originalScriptName.Valid {
 		add(originalScriptName.String)
-		// Transliterate non-Latin scripts to Latin for cross-script matching
 		if scoring.IsArabic(originalScriptName.String) {
 			add(scoring.TransliterateArabic(originalScriptName.String))
 		}
@@ -396,26 +389,23 @@ func buildNameCandidates(recordID uint32, firstName, middleName, surname, single
 	return candidates
 }
 
-// fetchAllNamesForRecords retrieves every name row for the given records and
-// builds candidates from all columns including transliterated Arabic names.
 func (h *ScreenHandler) fetchAllNamesForRecords(recordIDs map[uint32]bool) ([]nameCandidate, error) {
 	if len(recordIDs) == 0 {
 		return nil, nil
 	}
 
-	placeholders := make([]string, 0, len(recordIDs))
-	args := make([]interface{}, 0, len(recordIDs))
+	ids := make([]uint32, 0, len(recordIDs))
 	for id := range recordIDs {
-		placeholders = append(placeholders, "?")
-		args = append(args, id)
+		ids = append(ids, id)
 	}
+	inClause, args := uint32INClause(ids)
 
 	query := fmt.Sprintf(`
 		SELECT record_id, first_name, middle_name, surname,
 		       single_string_name, entity_name, original_script_name
 		FROM sanctions_names
-		WHERE record_id IN (%s)
-	`, strings.Join(placeholders, ","))
+		WHERE record_id IN %s
+	`, inClause)
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -437,177 +427,11 @@ func (h *ScreenHandler) fetchAllNamesForRecords(recordIDs map[uint32]bool) ([]na
 	return candidates, nil
 }
 
-func (h *ScreenHandler) loadRecords(ids []uint32) ([]model.SanctionsRecord, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(`
-		SELECT sr.id, sr.record_type, sr.action, sr.action_date, sr.gender,
-		       sr.active_status, sr.deceased, sr.profile_notes,
-		       sr.custom_list_id, COALESCE(cl.name, '')
-		FROM sanctions_records sr
-		LEFT JOIN custom_lists cl ON cl.id = sr.custom_list_id
-		WHERE sr.id IN (%s)
-	`, strings.Join(placeholders, ","))
-
-	rows, err := h.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	records := make([]model.SanctionsRecord, 0, len(ids))
-	for rows.Next() {
-		var rec model.SanctionsRecord
-		var customListID sql.NullInt64
-		var listName string
-		if err := rows.Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate,
-			&rec.Gender, &rec.ActiveStatus, &rec.Deceased, &rec.ProfileNotes,
-			&customListID, &listName); err != nil {
-			continue
-		}
-		applyCustomListMeta(&rec, customListID, listName)
-		records = append(records, rec)
-	}
-
-	for i := range records {
-		h.loadRecordNames(&records[i])
-		h.loadRecordDates(&records[i])
-		h.loadRecordCountries(&records[i])
-		h.loadRecordImages(&records[i])
-		h.loadRecordDescriptions(&records[i])
-		h.loadRecordAssociations(&records[i])
-	}
-
-	return records, nil
-}
-
-func (h *ScreenHandler) loadRecordNames(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query(`
-		SELECT id, record_id, name_type, title_honorific, first_name, middle_name, surname,
-		       maiden_name, suffix, single_string_name, original_script_name, entity_name
-		FROM sanctions_names WHERE record_id = ? LIMIT 10
-	`, rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var n model.SanctionsName
-		if err := rows.Scan(&n.ID, &n.RecordID, &n.NameType, &n.TitleHonorific, &n.FirstName, &n.MiddleName,
-			&n.Surname, &n.MaidenName, &n.Suffix, &n.SingleStringName, &n.OriginalScriptName, &n.EntityName); err != nil {
-			continue
-		}
-		rec.Names = append(rec.Names, n)
-	}
-}
-
-func (h *ScreenHandler) loadRecordDates(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query("SELECT id, record_id, date_type, day, month, year, note FROM sanctions_dates WHERE record_id = ?", rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var d model.SanctionsDate
-		if err := rows.Scan(&d.ID, &d.RecordID, &d.DateType, &d.Day, &d.Month, &d.Year, &d.Note); err != nil {
-			continue
-		}
-		rec.Dates = append(rec.Dates, d)
-	}
-}
-
-func (h *ScreenHandler) loadRecordCountries(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query(`
-		SELECT sc.id, sc.record_id, sc.country_type, sc.country_code, rc.name
-		FROM sanctions_countries sc
-		LEFT JOIN sanctions_ref_countries rc ON rc.code = sc.country_code
-		WHERE sc.record_id = ?
-	`, rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var c model.SanctionsCountry
-		if err := rows.Scan(&c.ID, &c.RecordID, &c.CountryType, &c.CountryCode, &c.CountryName); err != nil {
-			continue
-		}
-		rec.Countries = append(rec.Countries, c)
-	}
-}
-
-func (h *ScreenHandler) loadRecordImages(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query("SELECT id, record_id, url FROM sanctions_images WHERE record_id = ? LIMIT 1", rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var img model.SanctionsImage
-		if err := rows.Scan(&img.ID, &img.RecordID, &img.URL); err != nil {
-			continue
-		}
-		rec.Images = append(rec.Images, img)
-	}
-}
-
-func (h *ScreenHandler) loadRecordDescriptions(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query(`
-		SELECT d1.name, d2.name, d3.name
-		FROM sanctions_descriptions sd
-		LEFT JOIN sanctions_ref_description1 d1 ON d1.description1_id = sd.description1_id
-		LEFT JOIN sanctions_ref_description2 d2 ON d2.description2_id = sd.description2_id
-		LEFT JOIN sanctions_ref_description3 d3 ON d3.description3_id = sd.description3_id
-		WHERE sd.record_id = ?
-	`, rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var d model.SanctionsDescriptionDetail
-		if err := rows.Scan(&d.Description1, &d.Description2, &d.Description3); err != nil {
-			continue
-		}
-		rec.Descriptions = append(rec.Descriptions, d)
-	}
-}
-
-func (h *ScreenHandler) loadRecordAssociations(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query(`
-		SELECT sa.associate_id,
-		       COALESCE(sn.entity_name, sn.single_string_name, CONCAT_WS(' ', sn.first_name, sn.middle_name, sn.surname), '') AS associate_name,
-		       rr.name,
-		       sa.is_ex
-		FROM sanctions_associations sa
-		LEFT JOIN sanctions_names sn ON sn.record_id = sa.associate_id AND sn.name_type = 'Primary Name'
-		LEFT JOIN sanctions_ref_relationships rr ON rr.code = sa.relationship_code
-		WHERE sa.record_id = ?
-	`, rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var a model.SanctionsAssociationDetail
-		if err := rows.Scan(&a.AssociateID, &a.AssociateName, &a.Relationship, &a.IsEx); err != nil {
-			continue
-		}
-		rec.Associations = append(rec.Associations, a)
-	}
+func (h *ScreenHandler) loadRecordsForScreen(ids []uint32, req model.ScreenRequest) ([]model.SanctionsRecord, error) {
+	return loadRecordsBatch(h.db, ids, batchLoadOptions{
+		nameLimit:   10,
+		imageLimit:  1,
+		slim:        !req.IncludeNotes,
+		skipDetails: !req.IncludeDetails,
+	})
 }
