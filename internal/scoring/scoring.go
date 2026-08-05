@@ -6,30 +6,6 @@ import (
 	"unicode"
 )
 
-// entityNoiseWords are generic legal suffixes and organizational terms that
-// carry no distinguishing value when comparing entity names. They are removed
-// from token-level scoring so that "Al Rashid Trading Co" doesn't falsely
-// match "Al Saud Trading Co" just because of the shared noise words.
-var entityNoiseWords = map[string]bool{
-	"co": true, "company": true, "corp": true, "corporation": true,
-	"inc": true, "incorporated": true, "ltd": true, "limited": true,
-	"llc": true, "llp": true, "plc": true, "pllc": true,
-	"sa": true, "gmbh": true, "ag": true, "bv": true, "nv": true,
-	"sarl": true, "srl": true, "ooo": true, "zao": true,
-	"pjsc": true, "cjsc": true, "jsc": true,
-	"est": true, "establishment": true,
-	"trading": true, "shipping": true, "transport": true,
-	"holdings": true, "holding": true, "group": true,
-	"international": true, "intl": true,
-	"enterprise": true, "enterprises": true,
-	"organization": true, "organisation": true,
-	"foundation": true, "association": true, "society": true,
-	"institute": true, "services": true, "solutions": true,
-	"industries": true, "industrial": true,
-	"general": true, "national": true,
-	"the": true, "of": true, "and": true, "for": true,
-}
-
 // ScoreEntityName compares entity names by separating "significant" tokens
 // (the distinctive part of the name) from noise tokens (legal suffixes,
 // generic organizational terms). Significant tokens drive the match; noise
@@ -133,30 +109,14 @@ func ScoreName(searchName, candidateName string) int {
 		return computeScore(searchTokens, candidateTokens, search, candidate)
 	}
 
-	baseScore := computeScore(sigSearchTokens, sigCandidateTokens, search, candidate)
-
-	filtSearch := filterNameNoise(sigSearchTokens)
-	filtCandidate := filterNameNoise(sigCandidateTokens)
-	if len(filtSearch) != len(sigSearchTokens) || len(filtCandidate) != len(sigCandidateTokens) {
-		filteredScore := computeScore(filtSearch, filtCandidate, search, candidate)
-		if filteredScore > baseScore {
-			return filteredScore
-		}
-	}
-
-	return baseScore
-}
-
-// nameNoiseWords are patronymic connectors (bin/bint/ibn) and honorific titles
-// that appear in formal Arabic name records but carry no distinguishing value.
-// Filtering them from token scoring prevents long patronymic chains from
-// dragging down the bidirectional match score.
-var nameNoiseWords = map[string]bool{
-	"bin": true, "bint": true, "ibn": true, "ben": true,
-	"princess": true, "prince": true,
-	"sheikh": true, "shaikh": true, "shaykh": true,
-	"king": true, "queen": true,
-	"dr": true, "mr": true, "mrs": true, "ms": true,
+	// The connector-free token set is authoritative. Scoring both variants and
+	// keeping the higher result, as this used to, meant a connector could only
+	// ever raise a score — so adding بن or ال to the noise list would not have
+	// removed the inflation they cause.
+	return computeScore(
+		filterNameNoise(sigSearchTokens),
+		filterNameNoise(sigCandidateTokens),
+		search, candidate)
 }
 
 // filterNameNoise removes patronymic connectors and titles from tokens.
@@ -200,10 +160,9 @@ func computeScore(searchTokens, candidateTokens []string, searchFull, candidateF
 
 	total := (tokenScore*70 + fullScore*20 + ratioScore*10) / 100
 
-	total = subsetBoost(total, forwardScore, reverseScore,
-		len(searchTokens), len(candidateTokens))
+	total = subsetBoost(total, forwardScore, len(searchTokens), len(candidateTokens))
 
-	total = surnamePenalty(total, searchTokens, candidateTokens)
+	total = namePartGate(total, searchTokens, candidateTokens)
 
 	if total > 100 {
 		return 100
@@ -211,64 +170,189 @@ func computeScore(searchTokens, candidateTokens []string, searchFull, candidateF
 	return total
 }
 
-// subsetBoost raises the score when one name is clearly a subset of the other.
-// For short subsets (2-3 tokens) a higher coverage threshold (>60%) is required
-// to avoid boosting common-name overlaps like "Mohammed Hassan Ali" matching any
-// longer name that happens to contain those three frequent tokens.
-func subsetBoost(baseScore, forwardScore, reverseScore, searchLen, candidateLen int) int {
-	best := baseScore
+// minSubsetCoverage is the smallest share of the candidate's tokens the query
+// may cover and still be treated as a subset of it.
+const minSubsetCoverage = 40
 
-	boost := func(matchScore, subsetLen, supersetLen int) int {
-		if matchScore < 90 || subsetLen < 2 {
-			return 0
-		}
-		coverage := subsetLen * 100 / supersetLen
-		if coverage > 100 {
-			coverage = 100
-		}
-		minCoverage := 50
-		if subsetLen < 4 {
-			minCoverage = 61
-		}
-		if coverage < minCoverage {
-			return 0
-		}
-		return matchScore - (100-coverage)/2
+// subsetBoostCap limits how far the subset rule may lift a score above the
+// weighted blend, so one rule can never turn a mediocre match into a
+// near-certain one by itself.
+//
+// The allowance scales with the size of the query, because a fully matched quad
+// name is much stronger evidence of the same person than a fully matched pair
+// or triple: common given names co-occur by chance far more readily than four
+// name parts in the same record do. Without that distinction, "Mohammed Hassan
+// Ali" found inside a longer unrelated name is promoted just as confidently as
+// a complete four-part name is.
+func subsetBoostCap(searchLen int) int {
+	if searchLen >= 4 {
+		return 18
 	}
-
-	if b := boost(forwardScore, searchLen, candidateLen); b > best {
-		best = b
-	}
-	if b := boost(reverseScore, candidateLen, searchLen); b > best {
-		best = b
-	}
-
-	return best
+	return 12
 }
 
-// surnamePenalty reduces the score when the last token of the search (typically
-// the family/surname in Arabic names) has no good match among the candidate
-// tokens. This is the strongest signal for false positives: "Nouf Alkahtani"
-// should not match "Nouf Al-Sowaidi" just because they share a first name.
-func surnamePenalty(score int, searchTokens, candidateTokens []string) int {
+// subsetBoost raises the score when the query is a well-covered subset of a
+// longer recorded name — "Osama Bin Laden" against "Usama Bin Muhammad Bin Awad
+// Bin Laden". Gulf records routinely carry more patronymics than a client
+// supplies, and without this the surplus middle names would suppress a genuine
+// hit.
+//
+// Only that direction is considered. The mirror rule, boosting when the
+// candidate was a subset of the query, was the largest single source of false
+// positives. It keyed off how well the candidate's tokens were explained by the
+// query, so a record assembled entirely from high-frequency names scored 100
+// there whenever the query contained any of them, and returning that score
+// discarded the fact that the query's own distinguishing tokens had matched
+// nothing. It rated "سعود خليفه محمد ابراهيم" against "ابراهيم محمد ابراهيم
+// محمد" a perfect 100, up from a blended 53.
+func subsetBoost(baseScore, forwardScore, searchLen, candidateLen int) int {
+	// The rule exists to excuse *surplus* candidate tokens, so it needs the
+	// candidate to actually have more. At equal token counts neither side has
+	// anything to excuse and the two-directional blend is already the right
+	// answer.
+	if searchLen < 2 || searchLen >= candidateLen {
+		return baseScore
+	}
+	// Every query token must be accounted for before surplus candidate tokens
+	// can be excused.
+	if forwardScore < 90 {
+		return baseScore
+	}
+
+	coverage := searchLen * 100 / candidateLen
+	if coverage < minSubsetCoverage {
+		return baseScore
+	}
+
+	boosted := forwardScore - (100-coverage)/2
+	if cap := baseScore + subsetBoostCap(searchLen); boosted > cap {
+		boosted = cap
+	}
+	if boosted > baseScore {
+		return boosted
+	}
+	return baseScore
+}
+
+const (
+	// How well a query's given and family name have to be represented among the
+	// candidate's tokens to count as present. The family name is held to the
+	// stricter bar: it is the more discriminating of the two, and it is the one
+	// where a single substituted character separates real families — قعود from
+	// سعود, الشتوي from الشرقي. Given names carry far more spelling variance
+	// between systems, so an equally strict bar there would cost real matches.
+	givenNameMatchFloor  = 72
+	familyNameMatchFloor = 80
+	// Multipliers applied when the corresponding name part is missing.
+	givenNameShortfall  = 60
+	familyNameShortfall = 55
+)
+
+// namePartGate penalises a match that fails to account for the ends of the
+// query name.
+//
+// A Gulf name is given + father + grandfather + family. The middle two are what
+// get dropped, reordered or abbreviated as a name moves between systems; the
+// given name and the family name are the stable, discriminating pair. Scoring
+// the name as an unordered bag of tokens loses that, which is how a record
+// sharing only محمد and عبدالله with the query reaches the high eighties.
+//
+// Only the family name used to be checked, so nothing penalised a candidate
+// whose given name was absent entirely.
+func namePartGate(score int, searchTokens, candidateTokens []string) int {
 	if len(searchTokens) < 2 {
 		return score
 	}
-	lastToken := searchTokens[len(searchTokens)-1]
-	if len([]rune(lastToken)) < 3 {
-		return score
-	}
-	bestMatch := 0
-	for _, ct := range candidateTokens {
-		sim := levenshteinSimilarity(lastToken, ct)
-		if sim > bestMatch {
-			bestMatch = sim
+
+	present := func(token string, floor int) bool {
+		if len([]rune(token)) < 3 {
+			return true // too short to judge; do not penalise
 		}
+		for _, ct := range candidateTokens {
+			if tokenSimilarity(token, ct) >= floor {
+				return true
+			}
+		}
+		return false
 	}
-	if bestMatch < 65 {
-		return score * 65 / 100
+
+	if !present(searchTokens[0], givenNameMatchFloor) {
+		score = score * givenNameShortfall / 100
+	}
+	if !present(searchTokens[len(searchTokens)-1], familyNameMatchFloor) {
+		score = score * familyNameShortfall / 100
 	}
 	return score
+}
+
+const (
+	tokenMatchFloor        = 65
+	skeletonMatchScore     = 85
+	minSkeletonLenForMatch = 3
+)
+
+// editBudget is the largest edit distance still treated as a spelling variant
+// of a token of the given length.
+//
+// A percentage floor alone is too permissive for the short tokens Arabic
+// surnames reduce to once the article is removed: at 65%, a four-character
+// token tolerates a whole substituted character, which is the entire difference
+// between قعود and سعود. Capping the absolute number of edits scales the
+// tolerance to how much name there is to be wrong about.
+func editBudget(length int) int {
+	switch {
+	case length <= 2:
+		return 0
+	case length <= 7:
+		return 1
+	case length <= 11:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// tokenSimilarity compares two name tokens on a 0-100 scale, returning 0 when
+// they are too far apart to be plausibly the same name.
+func tokenSimilarity(a, b string) int {
+	if a == b {
+		return 100
+	}
+
+	a, b = stripArticle(a), stripArticle(b)
+	if a == b {
+		return 100
+	}
+
+	ra, rb := []rune(a), []rune(b)
+	maxLen := max(len(ra), len(rb))
+	if maxLen == 0 {
+		return 0
+	}
+	distance := levenshteinDistance(ra, rb)
+	sim := ((maxLen - distance) * 100) / maxLen
+
+	// Already a strong match; the skeleton check below cannot improve on it.
+	if distance <= editBudget(maxLen) && sim >= skeletonMatchScore {
+		return sim
+	}
+
+	// Two romanisations of one Arabic name differ mostly in the vowels the
+	// transcriber supplied, which edit distance charges for in full. An
+	// identical consonant skeleton means the difference is that transcription
+	// noise: Mohammed/Muhammad, Fahad/Fahd, Shurf/Shurafa.
+	if skeleton := consonantSkeleton(a); len(skeleton) >= minSkeletonLenForMatch &&
+		skeleton == consonantSkeleton(b) {
+		if sim < skeletonMatchScore {
+			sim = skeletonMatchScore
+		}
+		return sim
+	}
+
+	if distance > editBudget(maxLen) || sim < tokenMatchFloor {
+		return 0
+	}
+	return sim
 }
 
 // avgBestTokenSimilarity scores how well each source token is represented
@@ -282,14 +366,11 @@ func avgBestTokenSimilarity(sourceTokens, targetTokens []string) int {
 	for _, st := range sourceTokens {
 		best := 0
 		for _, tt := range targetTokens {
-			sim := levenshteinSimilarity(st, tt)
-			if sim > best {
+			if sim := tokenSimilarity(st, tt); sim > best {
 				best = sim
 			}
 		}
-		if best >= 65 {
-			total += best
-		}
+		total += best
 	}
 	return total / len(sourceTokens)
 }
@@ -370,33 +451,6 @@ var levenshteinBufPool = sync.Pool{
 		buf := make([]int, 128)
 		return buf
 	},
-}
-
-func normalize(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	var b strings.Builder
-	prevSpace := false
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-			prevSpace = false
-		} else if unicode.IsSpace(r) && !prevSpace {
-			b.WriteRune(' ')
-			prevSpace = true
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func tokenize(s string) []string {
-	tokens := strings.Fields(s)
-	result := make([]string, 0, len(tokens))
-	for _, t := range tokens {
-		if len(t) > 0 {
-			result = append(result, t)
-		}
-	}
-	return result
 }
 
 // --- Arabic-to-Latin transliteration ---

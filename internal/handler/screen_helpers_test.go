@@ -43,6 +43,40 @@ func TestBuildNgramFTQuery(t *testing.T) {
 	}
 }
 
+// Requiring a connector excludes every record that spells the same person
+// without it, which is most of them: بن and ال are optional in practice.
+func TestBuildFTQueryNeverRequiresConnectors(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens []string
+		want   string
+	}{
+		{
+			name:   "arabic patronymic chain",
+			tokens: []string{"سالم", "بن", "عبدالله", "بن", "احمد", "الشهري"},
+			want:   "+سالم* بن* +عبدالله* بن* احمد* الشهري*",
+		},
+		{
+			name:   "latin connectors and article",
+			tokens: []string{"Nouf", "Bint", "Fahd", "Al", "Saud"},
+			want:   "+Nouf* Bint* +Fahd* Al* Saud*",
+		},
+		{
+			name:   "no connectors keeps the leading half required",
+			tokens: []string{"nasser", "ahmed", "kamel", "ali"},
+			want:   "+nasser* +ahmed* kamel* ali*",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := buildBooleanFTQuery(tt.tokens); got != tt.want {
+				t.Fatalf("buildBooleanFTQuery(%v) = %q, want %q", tt.tokens, got, tt.want)
+			}
+		})
+	}
+}
+
 // The candidate lookup must filter on MATCH in the WHERE clause. Moving it to a
 // selected column plus HAVING makes MySQL scan all of sanctions_names instead of
 // using the FULLTEXT index, which turns a sub-second screen into ~50 seconds.

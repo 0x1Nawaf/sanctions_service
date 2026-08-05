@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/nnn/sanctions-service/internal/scoring"
 )
 
 func recordTypeFilterSQL(searchType string) string {
@@ -17,27 +19,38 @@ func recordTypeFilterSQL(searchType string) string {
 }
 
 func buildBooleanFTQuery(tokens []string) string {
-	required := (len(tokens) + 1) / 2
-	ftTerms := make([]string, len(tokens))
-	for i, t := range tokens {
-		if i < required {
-			ftTerms[i] = "+" + t + "*"
-		} else {
-			ftTerms[i] = t + "*"
-		}
-	}
-	return strings.Join(ftTerms, " ")
+	return buildFTQuery(tokens, "*")
 }
 
 func buildNgramFTQuery(tokens []string) string {
-	required := (len(tokens) + 1) / 2
-	ftTerms := make([]string, len(tokens))
-	for i, t := range tokens {
-		if i < required {
-			ftTerms[i] = "+" + t
-		} else {
-			ftTerms[i] = t
+	return buildFTQuery(tokens, "")
+}
+
+// buildFTQuery marks the leading half of the query's tokens as required so the
+// candidate set stays small, and the rest as optional.
+//
+// Connectors are never made required. "بن" and "ال" appear in a large share of
+// Gulf names but plenty of records spell the same person without them, so
+// requiring one excludes every such record from the candidate set before
+// scoring ever runs. They stay in the query as optional terms, where they still
+// contribute to relevance ordering.
+func buildFTQuery(tokens []string, suffix string) string {
+	significant := 0
+	for _, t := range tokens {
+		if !scoring.IsNameConnector(t) {
+			significant++
 		}
+	}
+	required := (significant + 1) / 2
+
+	ftTerms := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if required > 0 && !scoring.IsNameConnector(t) {
+			ftTerms = append(ftTerms, "+"+t+suffix)
+			required--
+			continue
+		}
+		ftTerms = append(ftTerms, t+suffix)
 	}
 	return strings.Join(ftTerms, " ")
 }
