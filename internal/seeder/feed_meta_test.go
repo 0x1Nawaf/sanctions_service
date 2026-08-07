@@ -18,12 +18,30 @@ func TestIsCompleteFeed(t *testing.T) {
 		t.Fatal("expected partial feed for delta_only")
 	}
 
+	// A delta mislabelled as complete must not license inactivation.
+	s.feedMeta = feedMeta{FeedScope: "complete"}
+	if s.isCompleteFeed(3_330, 2_500_000) {
+		t.Fatal("expected partial feed when a complete label contradicts the row counts")
+	}
+
+	s.feedMeta = feedMeta{FeedScope: "complete", RecordCount: 3_330}
+	if s.isCompleteFeed(3_900_000, 3_900_000) {
+		t.Fatal("expected partial feed when declared record_count is far below existing")
+	}
+
+	// An unlabelled feed states nothing about its scope, so it never inactivates.
 	s.feedMeta = feedMeta{}
 	if s.isCompleteFeed(1_000, 3_900_000) {
-		t.Fatal("expected heuristic partial feed")
+		t.Fatal("expected partial feed for unlabelled feed")
 	}
-	if !s.isCompleteFeed(3_800_000, 3_900_000) {
-		t.Fatal("expected heuristic complete feed")
+	if s.isCompleteFeed(3_800_000, 3_900_000) {
+		t.Fatal("expected partial feed for unlabelled feed even when sizes agree")
+	}
+
+	// Empty database: nothing to inactivate, and the label still governs.
+	s.feedMeta = feedMeta{FeedScope: "complete", RecordCount: 3_330}
+	if !s.isCompleteFeed(3_330, 0) {
+		t.Fatal("expected complete feed when seeding an empty database")
 	}
 }
 

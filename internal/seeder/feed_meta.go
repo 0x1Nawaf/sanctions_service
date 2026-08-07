@@ -78,12 +78,17 @@ func skipJSONDecoderValue(dec *json.Decoder) error {
 	return err
 }
 
+// isCompleteFeed reports whether the file may be treated as the whole universe
+// of records, which is what licenses inactivating everything absent from it.
+//
+// Inactivation requires an explicit feed_scope=complete label AND agreement
+// from the size heuristics. A label alone is not enough: a delta file
+// mislabelled as complete would otherwise inactivate the entire database.
+// An unlabelled file is never treated as complete, because a file predating
+// feed_scope carries no statement about its own scope.
 func (s *Seeder) isCompleteFeed(incoming, existing int) bool {
-	if s.feedMeta.FeedScope == "delta_only" {
+	if s.feedMeta.FeedScope != "complete" {
 		return false
-	}
-	if s.feedMeta.FeedScope == "complete" {
-		return true
 	}
 	if existing > 10_000 && incoming < existing*9/10 {
 		return false
