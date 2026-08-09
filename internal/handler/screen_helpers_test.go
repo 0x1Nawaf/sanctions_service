@@ -29,7 +29,7 @@ func TestRecordTypeFilterSQL(t *testing.T) {
 
 func TestBuildBooleanFTQueryStripsBooleanOperators(t *testing.T) {
 	got := buildBooleanFTQuery([]string{`"john"`, `+smith`, `o'brien`})
-	want := "+john* +smith* obrien*"
+	want := "john* +smith* +obrien*"
 	if got != want {
 		t.Fatalf("buildBooleanFTQuery() = %q, want %q", got, want)
 	}
@@ -49,46 +49,54 @@ func TestBuildBooleanFTQuery(t *testing.T) {
 	}
 }
 
-func TestBuildNgramFTQueryForNouraAlkahtani(t *testing.T) {
+// "noura alkahtani" returned a 500 in production: the word index found nothing,
+// which handed the query to the ngram fallback and MySQL error 188. Both halves
+// of the miss are covered here — the surname has to be the required term, and
+// it has to also search the spelling the word parser produces for "Al-Kahtani".
+func TestBuildFTQueryForNouraAlkahtani(t *testing.T) {
 	tokens := tokenizeSearchName("noura alkahtani")
 	if len(tokens) != 2 || tokens[0] != "noura" || tokens[1] != "alkahtani" {
 		t.Fatalf("tokenizeSearchName() = %v", tokens)
 	}
 
-	got := buildNgramFTQuery(tokens)
-	want := "+noura +alkahtani"
+	got := buildBooleanFTQuery(tokens)
+	want := "noura* +(alkahtani* kahtani*)"
 	if got != want {
-		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
-	}
-
-	gotBool := buildBooleanFTQuery(tokens)
-	wantBool := "+noura* alkahtani*"
-	if gotBool != wantBool {
-		t.Fatalf("buildBooleanFTQuery() = %q, want %q", gotBool, wantBool)
+		t.Fatalf("buildBooleanFTQuery() = %q, want %q", got, want)
 	}
 }
 
-func TestBuildNgramFTQuery(t *testing.T) {
-	got := buildNgramFTQuery([]string{"nasser", "ahmed", "kamel"})
-	want := "+nasser +ahmed +kamel"
+// The broad retry is what runs when the precise query finds nothing, so it must
+// require exactly one term: any more and a differently transliterated token
+// still excludes the record.
+func TestBuildBroadFTQueryRequiresOnlyMostDistinctiveToken(t *testing.T) {
+	got := buildBroadFTQuery([]string{"nasser", "ahmed", "kamel", "ali"})
+	want := "+nasser* ahmed* kamel* ali*"
 	if got != want {
-		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
+		t.Fatalf("buildBroadFTQuery() = %q, want %q", got, want)
 	}
 }
 
-func TestBuildNgramFTQueryRequiresAllSignificantTokens(t *testing.T) {
-	got := buildNgramFTQuery([]string{"John", "Smith"})
-	want := "+John +Smith"
-	if got != want {
-		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
+// Sources write the article joined, separated, or not at all. The word parser
+// splits "Al-Kahtani" into "al" and "kahtani", so the joined spelling a user
+// types has to search the stripped form too.
+func TestFTTermGroupSearchesArticleStrippedSpelling(t *testing.T) {
+	tests := []struct {
+		token string
+		want  string
+	}{
+		{token: "alkahtani", want: "(alkahtani* kahtani*)"},
+		{token: "الشهري", want: "(الشهري* شهري*)"},
+		{token: "kahtani", want: "kahtani*"},
+		{token: "ali", want: "ali*"},
 	}
-}
 
-func TestBuildNgramFTQueryKeepsConnectorsOptional(t *testing.T) {
-	got := buildNgramFTQuery([]string{"Nouf", "Bint", "Fahd", "Al", "Saud"})
-	want := "+Nouf Bint +Fahd Al +Saud"
-	if got != want {
-		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.token, func(t *testing.T) {
+			if got := ftTermGroup(tt.token); got != tt.want {
+				t.Fatalf("ftTermGroup(%q) = %q, want %q", tt.token, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -103,7 +111,7 @@ func TestBuildFTQueryNeverRequiresConnectors(t *testing.T) {
 		{
 			name:   "arabic patronymic chain",
 			tokens: []string{"سالم", "بن", "عبدالله", "بن", "احمد", "الشهري"},
-			want:   "+سالم* بن* +عبدالله* بن* احمد* الشهري*",
+			want:   "سالم* بن* +عبدالله* بن* احمد* +(الشهري* شهري*)",
 		},
 		{
 			name:   "latin connectors and article",
@@ -111,7 +119,7 @@ func TestBuildFTQueryNeverRequiresConnectors(t *testing.T) {
 			want:   "+Nouf* Bint* +Fahd* Al* Saud*",
 		},
 		{
-			name:   "no connectors keeps the leading half required",
+			name:   "no connectors keeps half the tokens required",
 			tokens: []string{"nasser", "ahmed", "kamel", "ali"},
 			want:   "+nasser* +ahmed* kamel* ali*",
 		},
@@ -146,24 +154,19 @@ func TestNameSearchQueryFiltersOnMatchInWhere(t *testing.T) {
 }
 
 func TestNameSearchQueryPinsFulltextIndex(t *testing.T) {
-	// Both FULLTEXT indexes cover the same columns, so each query has to name
-	// the one it wants.
+	// A second FULLTEXT index may cover the same columns, so the query has to
+	// name the one it wants.
 	word := nameSearchQuery(wordFulltextIndex, "")
 	if !strings.Contains(word, "FORCE INDEX ("+wordFulltextIndex+")") {
 		t.Fatalf("word query does not pin %s:\n%s", wordFulltextIndex, word)
 	}
-	if strings.Contains(word, ngramFulltextIndex) {
-		t.Fatalf("word query must not reference the ngram index:\n%s", word)
-	}
-
-	ngram := nameSearchQuery(ngramFulltextIndex, "")
-	if !strings.Contains(ngram, "FORCE INDEX ("+ngramFulltextIndex+")") {
-		t.Fatalf("ngram query does not pin %s:\n%s", ngramFulltextIndex, ngram)
+	if strings.Contains(word, "ngram") {
+		t.Fatalf("screening must not reference the ngram index:\n%s", word)
 	}
 }
 
 func TestNameSearchQueryPlaceholderCount(t *testing.T) {
-	// fetchFulltextCandidates / fetchNgramCandidates pass the search string
+	// runFulltextQuery passes the search string
 	// twice: once for the selected relevance, once for the WHERE predicate.
 	query := nameSearchQuery(wordFulltextIndex, recordTypeFilterSQL("entity"))
 	if got := strings.Count(query, "?"); got != 2 {

@@ -19,12 +19,15 @@ func isRetryableQueryErr(err error) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
+	// Do not retry query timeouts — a slow FULLTEXT/LIKE scan would run 3x.
+	if strings.Contains(msg, "i/o timeout") {
+		return false
+	}
 	return strings.Contains(msg, "invalid connection") ||
 		strings.Contains(msg, "bad connection") ||
 		strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "i/o timeout")
+		strings.Contains(msg, "broken pipe")
 }
 
 func queryRowsWithRetry(db *sql.DB, query string, args ...interface{}) (*sql.Rows, error) {

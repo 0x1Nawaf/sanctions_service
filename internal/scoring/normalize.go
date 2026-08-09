@@ -132,6 +132,25 @@ func stripArticle(token string) string {
 	return token
 }
 
+// ArticleStrippedVariant returns token without its leading definite article, or
+// "" when it carries none.
+//
+// Retrieval needs this because the FULLTEXT word parser splits on punctuation
+// and spaces: a record stored as "Al-Kahtani" or "Al Kahtani" indexes the words
+// "al" and "kahtani", never "alkahtani". A search for the joined spelling then
+// matches nothing, even though the record is present. Searching both spellings
+// recovers it.
+func ArticleStrippedVariant(token string) string {
+	t := normalize(token)
+	if t == "" {
+		return ""
+	}
+	if stripped := stripArticle(t); stripped != t {
+		return stripped
+	}
+	return ""
+}
+
 // consonantSkeleton drops the vowels from a Latin token and collapses repeated
 // letters.
 //

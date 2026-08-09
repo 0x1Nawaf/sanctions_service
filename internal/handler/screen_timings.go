@@ -14,9 +14,9 @@ type screenPhaseTimings struct {
 	total           time.Duration
 }
 
-func logScreenTimings(query, searchType string, t screenPhaseTimings, initialCandidates, expandedRecords, results int, usedLike bool) {
+func logScreenTimings(query, searchType string, t screenPhaseTimings, initialCandidates, expandedRecords, results int, usedLike, usedBroad bool) {
 	log.Printf(
-		"screen timing query=%q type=%s fetch=%s expand=%s score=%s like_retry=%s hydrate=%s total=%s initial_candidates=%d expanded_records=%d results=%d used_like=%t",
+		"screen timing query=%q type=%s fetch=%s expand=%s score=%s like_retry=%s hydrate=%s total=%s initial_candidates=%d expanded_records=%d results=%d used_like=%t used_broad=%t",
 		query,
 		searchType,
 		t.fetchCandidates,
@@ -29,5 +29,6 @@ func logScreenTimings(query, searchType string, t screenPhaseTimings, initialCan
 		expandedRecords,
 		results,
 		usedLike,
+		usedBroad,
 	)
 }

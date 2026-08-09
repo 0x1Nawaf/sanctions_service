@@ -134,20 +134,22 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 	initialCandidateCount := 0
 	expandedRecordCount := 0
 	usedLike := false
+	usedBroad := false
 	resultCount := 0
 
 	defer func() {
 		timings.total = time.Since(start)
-		logScreenTimings(req.Name, req.SearchType, timings, initialCandidateCount, expandedRecordCount, resultCount, usedLike)
+		logScreenTimings(req.Name, req.SearchType, timings, initialCandidateCount, expandedRecordCount, resultCount, usedLike, usedBroad)
 	}()
 
 	t0 := time.Now()
-	candidates, usedFallback, err := h.fetchCandidates(req.Name, req.SearchType)
+	candidates, usedBroadRetry, err := h.fetchCandidates(req.Name, req.SearchType)
 	timings.fetchCandidates = time.Since(t0)
 	if err != nil {
 		return nil, err
 	}
 	initialCandidateCount = len(candidates)
+	usedBroad = usedBroadRetry
 
 	seen := make(map[string]bool)
 	markCandidatesSeen(seen, candidates)
@@ -171,25 +173,28 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 	}
 	timings.score = time.Since(t0)
 
-	if len(bestByRecord) == 0 && !usedFallback {
+	if len(bestByRecord) == 0 && h.useLikeFallback {
 		t0 = time.Now()
-		fallbackCandidates, fallbackUsedLike, err := h.fetchFallbackCandidates(tokenizeSearchName(req.Name), req.SearchType)
-		if err != nil {
-			return nil, err
-		}
-		if len(fallbackCandidates) > 0 {
-			usedLike = fallbackUsedLike
-			likePreliminary := preliminaryScores(fallbackCandidates, req.Name, req.SearchType)
-			likeExpandIDs := selectRecordIDsForAliasExpansion(likePreliminary, req.MinScore)
-			mergeCandidateScores(bestByRecord, fallbackCandidates, req.Name, req.SearchType, req.MinScore)
-			fallbackSeen := make(map[string]bool)
-			markCandidatesSeen(fallbackSeen, fallbackCandidates)
-			if len(likeExpandIDs) > 0 {
-				expanded, err := h.fetchAllNamesForRecords(likeExpandIDs)
-				if err != nil {
-					return nil, err
+		tokens := tokenizeSearchName(req.Name)
+		if len(tokens) > 0 {
+			fallbackCandidates, err := h.fetchLikeCandidates(tokens, req.SearchType)
+			if err != nil {
+				return nil, err
+			}
+			if len(fallbackCandidates) > 0 {
+				usedLike = true
+				likePreliminary := preliminaryScores(fallbackCandidates, req.Name, req.SearchType)
+				likeExpandIDs := selectRecordIDsForAliasExpansion(likePreliminary, req.MinScore)
+				mergeCandidateScores(bestByRecord, fallbackCandidates, req.Name, req.SearchType, req.MinScore)
+				fallbackSeen := make(map[string]bool)
+				markCandidatesSeen(fallbackSeen, fallbackCandidates)
+				if len(likeExpandIDs) > 0 {
+					expanded, err := h.fetchAllNamesForRecords(likeExpandIDs)
+					if err != nil {
+						return nil, err
+					}
+					mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(fallbackSeen, expanded), req.Name, req.SearchType, req.MinScore)
 				}
-				mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(fallbackSeen, expanded), req.Name, req.SearchType, req.MinScore)
 			}
 		}
 		timings.likeRetry = time.Since(t0)
@@ -260,6 +265,12 @@ func tokenizeSearchName(searchName string) []string {
 	return tokens
 }
 
+// fetchCandidates runs the precise FULLTEXT lookup and, only when it finds
+// nothing, retries with the broader one. Both are served by the same index
+// under the same LIMIT, so a miss costs one extra millisecond-scale query
+// instead of the table scan the ngram and LIKE fallbacks used to cost.
+//
+// The bool reports whether the broad retry produced the candidates.
 func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCandidate, bool, error) {
 	tokens := tokenizeSearchName(searchName)
 	if len(tokens) == 0 {
@@ -268,13 +279,19 @@ func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCa
 
 	candidates, err := h.fetchFulltextCandidates(tokens, searchType)
 	if err != nil {
-		log.Printf("screen word fulltext failed type=%s tokens=%v err=%v", searchType, tokens, err)
-	} else if len(candidates) > 0 {
+		log.Printf("screen fulltext failed type=%s tokens=%v err=%v", searchType, tokens, err)
+		return nil, false, err
+	}
+	if len(candidates) > 0 {
 		return candidates, false, nil
 	}
 
-	fallback, _, err := h.fetchFallbackCandidates(tokens, searchType)
-	return fallback, true, err
+	broad, err := h.fetchBroadFulltextCandidates(tokens, searchType)
+	if err != nil {
+		log.Printf("screen broad fulltext failed type=%s tokens=%v err=%v", searchType, tokens, err)
+		return nil, false, err
+	}
+	return broad, true, nil
 }
 
 func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) ([]nameCandidate, error) {

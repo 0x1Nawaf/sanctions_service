@@ -2,13 +2,11 @@ package handler
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
-	"log"
 	"regexp"
+	"sort"
 	"strings"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/nnn/sanctions-service/internal/scoring"
 )
 
@@ -22,76 +20,110 @@ func recordTypeFilterSQL(searchType string) string {
 	return ""
 }
 
-func buildBooleanFTQuery(tokens []string) string {
-	return buildFTQuery(tokens, "*")
-}
-
-func buildNgramFTQuery(tokens []string) string {
-	cleaned := make([]string, 0, len(tokens))
-	for _, t := range tokens {
-		if s := sanitizeFTToken(t); s != "" {
-			cleaned = append(cleaned, s)
-		}
-	}
-	if len(cleaned) == 0 {
-		return ""
-	}
-
-	// Ngram matching is far broader than word FULLTEXT. Requiring only half of the
-	// tokens (as in buildFTQuery) can match millions of rows on a large feed and
-	// trigger MySQL error 188 (FTS query exceeds result cache limit).
-	ftTerms := make([]string, 0, len(cleaned))
-	for _, t := range cleaned {
-		if scoring.IsNameConnector(t) {
-			ftTerms = append(ftTerms, t)
-			continue
-		}
-		ftTerms = append(ftTerms, "+"+t)
-	}
-	return strings.Join(ftTerms, " ")
-}
-
-// buildFTQuery marks the leading half of the query's tokens as required so the
-// candidate set stays small, and the rest as optional.
-//
-// Connectors are never made required. "بن" and "ال" appear in a large share of
-// Gulf names but plenty of records spell the same person without them, so
-// requiring one excludes every such record from the candidate set before
-// scoring ever runs. They stay in the query as optional terms, where they still
-// contribute to relevance ordering.
+// Boolean-mode operators in raw input would either change the meaning of the
+// query or make MySQL reject it outright.
 var ftTokenSanitizeRe = regexp.MustCompile(`[+\-><()~*"\\@',;:!?.]+`)
 
 func sanitizeFTToken(token string) string {
 	return strings.TrimSpace(ftTokenSanitizeRe.ReplaceAllString(token, ""))
 }
 
-func buildFTQuery(tokens []string, suffix string) string {
+func sanitizeFTTokens(tokens []string) []string {
 	cleaned := make([]string, 0, len(tokens))
 	for _, t := range tokens {
 		if s := sanitizeFTToken(t); s != "" {
 			cleaned = append(cleaned, s)
 		}
 	}
-	if len(cleaned) == 0 {
-		return ""
-	}
+	return cleaned
+}
 
+// buildBooleanFTQuery is the precise lookup: half of the query's tokens are
+// required, so the candidate set stays small enough for the FULLTEXT index to
+// serve it in milliseconds.
+func buildBooleanFTQuery(tokens []string) string {
+	cleaned := sanitizeFTTokens(tokens)
 	significant := 0
 	for _, t := range cleaned {
 		if !scoring.IsNameConnector(t) {
 			significant++
 		}
 	}
-	required := (significant + 1) / 2
+	return buildFTQuery(cleaned, (significant+1)/2)
+}
 
-	ftTerms := make([]string, 0, len(cleaned))
-	for _, t := range cleaned {
-		if required > 0 && !scoring.IsNameConnector(t) {
-			ftTerms = append(ftTerms, "+"+t+suffix)
-			required--
+// buildBroadFTQuery is the retry used when the precise lookup finds nothing. It
+// requires only the single most distinctive token, so a record still surfaces
+// when every other token is transliterated differently ("Nura" for "Noura").
+//
+// It stays on the same FULLTEXT index and the same LIMIT, so the retry costs
+// one more indexed query rather than the table scan an ngram or LIKE fallback
+// would cost on a multi-million-row feed.
+func buildBroadFTQuery(tokens []string) string {
+	return buildFTQuery(sanitizeFTTokens(tokens), 1)
+}
+
+// requiredTokenIndices picks which tokens the FULLTEXT query insists on.
+//
+// Longest first, because transliteration varies most in short given names while
+// the surname carries the distinguishing letters. Picking by position instead
+// pins the query to the given name, and a feed spelling it "Nura" or "Noora"
+// then excludes the record before scoring ever sees it.
+//
+// Connectors are never eligible. "بن" and "ال" appear in a large share of Gulf
+// names but plenty of records spell the same person without them, so requiring
+// one excludes every such record. They stay in the query as optional terms,
+// where they still contribute to relevance ordering.
+func requiredTokenIndices(tokens []string, count int) map[int]bool {
+	type candidate struct {
+		index  int
+		length int
+	}
+
+	eligible := make([]candidate, 0, len(tokens))
+	for i, t := range tokens {
+		if scoring.IsNameConnector(t) {
 			continue
 		}
-		ftTerms = append(ftTerms, t+suffix)
+		eligible = append(eligible, candidate{index: i, length: len([]rune(t))})
+	}
+
+	sort.SliceStable(eligible, func(a, b int) bool {
+		return eligible[a].length > eligible[b].length
+	})
+
+	required := make(map[int]bool, count)
+	for i := 0; i < count && i < len(eligible); i++ {
+		required[eligible[i].index] = true
+	}
+	return required
+}
+
+// ftTermGroup renders one query token, together with its article-stripped
+// spelling when it has one. "alkahtani" becomes "(alkahtani* kahtani*)" so the
+// term also matches records the word parser split into "al" and "kahtani".
+func ftTermGroup(token string) string {
+	variant := scoring.ArticleStrippedVariant(token)
+	if variant == "" || variant == token {
+		return token + "*"
+	}
+	return "(" + token + "* " + variant + "*)"
+}
+
+func buildFTQuery(cleaned []string, requiredCount int) string {
+	if len(cleaned) == 0 {
+		return ""
+	}
+
+	required := requiredTokenIndices(cleaned, requiredCount)
+
+	ftTerms := make([]string, 0, len(cleaned))
+	for i, t := range cleaned {
+		group := ftTermGroup(t)
+		if required[i] {
+			group = "+" + group
+		}
+		ftTerms = append(ftTerms, group)
 	}
 	return strings.Join(ftTerms, " ")
 }
@@ -100,12 +132,11 @@ const (
 	nameSearchColumns = "sn.first_name, sn.middle_name, sn.surname, sn.single_string_name, sn.original_script_name, sn.entity_name"
 	nameSearchLimit   = 300
 
-	wordFulltextIndex  = "sanctions_names_fulltext"
-	ngramFulltextIndex = "sanctions_names_ngram_fulltext"
+	wordFulltextIndex = "sanctions_names_fulltext"
 )
 
-// nameSearchQuery builds the candidate lookup against one of the FULLTEXT
-// indexes on sanctions_names.
+// nameSearchQuery builds the candidate lookup against the word-parser FULLTEXT
+// index on sanctions_names.
 //
 // The MATCH predicate has to sit in the WHERE clause: that is the only form
 // MySQL can serve from the FULLTEXT index. Selecting MATCH as a column and
@@ -116,9 +147,8 @@ const (
 // function and runs a single full-text search, and ORDER BY on its alias lets
 // the optimizer stop reading once LIMIT rows have passed the filters.
 //
-// ftIndex is pinned with FORCE INDEX because the word-parser and ngram indexes
-// cover an identical column list, so MATCH alone does not identify which one to
-// use.
+// ftIndex is pinned with FORCE INDEX because a second FULLTEXT index may cover
+// an identical column list, and MATCH alone does not identify which one to use.
 func nameSearchQuery(ftIndex, typeFilter string) string {
 	matchExpr := fmt.Sprintf("MATCH(%s) AGAINST(? IN BOOLEAN MODE)", nameSearchColumns)
 
@@ -138,39 +168,20 @@ func nameSearchQuery(ftIndex, typeFilter string) string {
 }
 
 func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
-	ftQuery := buildBooleanFTQuery(tokens)
+	return h.runFulltextQuery(buildBooleanFTQuery(tokens), searchType)
+}
+
+func (h *ScreenHandler) fetchBroadFulltextCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
+	return h.runFulltextQuery(buildBroadFTQuery(tokens), searchType)
+}
+
+func (h *ScreenHandler) runFulltextQuery(ftQuery, searchType string) ([]nameCandidate, error) {
 	if ftQuery == "" {
 		return nil, nil
 	}
 	query := nameSearchQuery(wordFulltextIndex, recordTypeFilterSQL(searchType))
 
 	return h.queryNameCandidates(query, []interface{}{ftQuery, ftQuery})
-}
-
-func (h *ScreenHandler) tryLikeFallback(tokens []string, searchType string) ([]nameCandidate, bool, error) {
-	likeCandidates, err := h.fetchLikeCandidates(tokens, searchType)
-	if err != nil {
-		return nil, true, err
-	}
-	return likeCandidates, true, nil
-}
-
-func (h *ScreenHandler) fetchNgramCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
-	ftQuery := buildNgramFTQuery(tokens)
-	if ftQuery == "" {
-		return nil, nil
-	}
-	query := nameSearchQuery(ngramFulltextIndex, recordTypeFilterSQL(searchType))
-
-	return h.queryNameCandidates(query, []interface{}{ftQuery, ftQuery})
-}
-
-func isFTSCacheLimitErr(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	if errors.As(err, &mysqlErr) && mysqlErr.Number == 188 {
-		return true
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "fts query exceeds result cache limit")
 }
 
 func (h *ScreenHandler) queryNameCandidates(query string, args []interface{}) ([]nameCandidate, error) {
@@ -192,28 +203,4 @@ func (h *ScreenHandler) queryNameCandidates(query string, args []interface{}) ([
 		candidates = append(candidates, buildNameCandidates(recordID, firstName, middleName, surname, singleStringName, entityName, originalScriptName)...)
 	}
 	return candidates, rows.Err()
-}
-
-func (h *ScreenHandler) fetchFallbackCandidates(tokens []string, searchType string) ([]nameCandidate, bool, error) {
-	candidates, err := h.fetchNgramCandidates(tokens, searchType)
-	if err != nil {
-		if isFTSCacheLimitErr(err) {
-			log.Printf("screen ngram FTS cache limit exceeded query=%q tokens=%v", buildNgramFTQuery(tokens), tokens)
-			return h.tryLikeFallback(tokens, searchType)
-		}
-		if h.useLikeFallback {
-			log.Printf("screen ngram failed, trying LIKE fallback tokens=%v err=%v", tokens, err)
-			return h.tryLikeFallback(tokens, searchType)
-		}
-		return nil, false, fmt.Errorf("ngram query: %w", err)
-	}
-	if len(candidates) > 0 {
-		return candidates, false, nil
-	}
-
-	if h.useLikeFallback {
-		return h.tryLikeFallback(tokens, searchType)
-	}
-
-	return nil, false, nil
 }
