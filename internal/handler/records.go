@@ -165,34 +165,19 @@ func (h *RecordsHandler) Show(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var rec model.SanctionsRecord
-	var customListID sql.NullInt64
-	var listName string
-	err = h.db.QueryRow(`
-		SELECT sr.id, sr.record_type, sr.action, sr.action_date, sr.gender, sr.active_status,
-		       sr.deceased, sr.profile_notes, sr.custom_list_id, COALESCE(cl.name, '')
-		FROM sanctions_records sr
-		LEFT JOIN custom_lists cl ON cl.id = sr.custom_list_id
-		WHERE sr.id = ?
-	`, id).Scan(&rec.ID, &rec.RecordType, &rec.Action, &rec.ActionDate, &rec.Gender, &rec.ActiveStatus, &rec.Deceased, &rec.ProfileNotes, &customListID, &listName)
-	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "record not found")
-		return
-	}
+	// Shares loadRecordsBatch with screening so both paths return the same
+	// shape, and so a fix to one of the related-data queries reaches both.
+	records, err := loadRecordsBatch(h.db, []uint32{uint32(id)}, batchLoadOptions{imageLimit: 5})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	applyCustomListMeta(&rec, customListID, listName)
+	if len(records) == 0 {
+		writeError(w, http.StatusNotFound, "record not found")
+		return
+	}
 
-	h.loadNames(&rec)
-	h.loadDates(&rec)
-	h.loadCountries(&rec)
-	h.loadImages(&rec)
-	h.loadDescriptions(&rec)
-	h.loadAssociations(&rec)
-
-	writeJSON(w, rec)
+	writeJSON(w, records[0])
 }
 
 // attachPrimaryNames fills in one primary name per record using a single query
@@ -236,128 +221,6 @@ func (h *RecordsHandler) attachPrimaryNames(records []model.SanctionsRecord) {
 		if n, ok := byRecord[records[i].ID]; ok {
 			records[i].Names = append(records[i].Names, n)
 		}
-	}
-}
-
-func (h *RecordsHandler) loadNames(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query(`
-		SELECT id, record_id, name_type, title_honorific, first_name, middle_name, surname,
-		       maiden_name, suffix, single_string_name, original_script_name, entity_name
-		FROM sanctions_names WHERE record_id = ?
-	`, rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var n model.SanctionsName
-		if err := rows.Scan(&n.ID, &n.RecordID, &n.NameType, &n.TitleHonorific, &n.FirstName, &n.MiddleName,
-			&n.Surname, &n.MaidenName, &n.Suffix, &n.SingleStringName, &n.OriginalScriptName, &n.EntityName); err != nil {
-			continue
-		}
-		rec.Names = append(rec.Names, n)
-	}
-}
-
-func (h *RecordsHandler) loadDates(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query("SELECT id, record_id, date_type, day, month, year, note FROM sanctions_dates WHERE record_id = ?", rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var d model.SanctionsDate
-		if err := rows.Scan(&d.ID, &d.RecordID, &d.DateType, &d.Day, &d.Month, &d.Year, &d.Note); err != nil {
-			continue
-		}
-		rec.Dates = append(rec.Dates, d)
-	}
-}
-
-func (h *RecordsHandler) loadCountries(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query(`
-		SELECT sc.id, sc.record_id, sc.country_type, sc.country_code, rc.name
-		FROM sanctions_countries sc
-		LEFT JOIN sanctions_ref_countries rc ON rc.code = sc.country_code
-		WHERE sc.record_id = ?
-	`, rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var c model.SanctionsCountry
-		if err := rows.Scan(&c.ID, &c.RecordID, &c.CountryType, &c.CountryCode, &c.CountryName); err != nil {
-			continue
-		}
-		rec.Countries = append(rec.Countries, c)
-	}
-}
-
-func (h *RecordsHandler) loadImages(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query("SELECT id, record_id, url FROM sanctions_images WHERE record_id = ? LIMIT 5", rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var img model.SanctionsImage
-		if err := rows.Scan(&img.ID, &img.RecordID, &img.URL); err != nil {
-			continue
-		}
-		rec.Images = append(rec.Images, img)
-	}
-}
-
-func (h *RecordsHandler) loadDescriptions(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query(`
-		SELECT d1.name, d2.name, d3.name
-		FROM sanctions_descriptions sd
-		LEFT JOIN sanctions_ref_description1 d1 ON d1.description1_id = sd.description1_id
-		LEFT JOIN sanctions_ref_description2 d2 ON d2.description2_id = sd.description2_id
-		LEFT JOIN sanctions_ref_description3 d3 ON d3.description3_id = sd.description3_id
-		WHERE sd.record_id = ?
-	`, rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var d model.SanctionsDescriptionDetail
-		if err := rows.Scan(&d.Description1, &d.Description2, &d.Description3); err != nil {
-			continue
-		}
-		rec.Descriptions = append(rec.Descriptions, d)
-	}
-}
-
-func (h *RecordsHandler) loadAssociations(rec *model.SanctionsRecord) {
-	rows, err := h.db.Query(`
-		SELECT sa.associate_id,
-		       COALESCE(sn.entity_name, sn.single_string_name, CONCAT_WS(' ', sn.first_name, sn.middle_name, sn.surname), '') AS associate_name,
-		       rr.name,
-		       sa.is_ex
-		FROM sanctions_associations sa
-		LEFT JOIN sanctions_names sn ON sn.record_id = sa.associate_id AND sn.name_type = 'Primary Name'
-		LEFT JOIN sanctions_ref_relationships rr ON rr.code = sa.relationship_code
-		WHERE sa.record_id = ?
-	`, rec.ID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var a model.SanctionsAssociationDetail
-		if err := rows.Scan(&a.AssociateID, &a.AssociateName, &a.Relationship, &a.IsEx); err != nil {
-			continue
-		}
-		rec.Associations = append(rec.Associations, a)
 	}
 }
 
