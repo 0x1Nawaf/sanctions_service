@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -25,7 +26,7 @@ func NewScreenHandler(db *sql.DB, useLikeFallback bool) *ScreenHandler {
 	return &ScreenHandler{db: db, useLikeFallback: useLikeFallback}
 }
 
-var sanitizeRe = regexp.MustCompile(`[+\-><()~*"@.,;:!?']+`)
+var sanitizeRe = regexp.MustCompile(`[+\-><()~*"\\@.,;:!?']+`)
 
 func normalizeScreenRequest(req *model.ScreenRequest) {
 	if req.MinScore < 1 || req.MinScore > 100 {
@@ -51,6 +52,7 @@ func (h *ScreenHandler) Screen(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.screenWithScore(req)
 	if err != nil {
+		log.Printf("screen failed query=%q type=%s err=%v", req.Name, req.SearchType, err)
 		writeError(w, http.StatusInternalServerError, "screening failed")
 		return
 	}
@@ -99,6 +101,7 @@ func (h *ScreenHandler) ScreenBatch(w http.ResponseWriter, r *http.Request) {
 		screenReq.Name = name
 		results, err := h.screenWithScore(screenReq)
 		if err != nil {
+			log.Printf("screen batch failed query=%q type=%s err=%v", name, screenReq.SearchType, err)
 			batchResults = append(batchResults, model.BatchScreenResult{
 				Query:    name,
 				MinScore: screenReq.MinScore,
@@ -265,9 +268,8 @@ func (h *ScreenHandler) fetchCandidates(searchName, searchType string) ([]nameCa
 
 	candidates, err := h.fetchFulltextCandidates(tokens, searchType)
 	if err != nil {
-		return nil, false, err
-	}
-	if len(candidates) > 0 {
+		log.Printf("screen word fulltext failed type=%s tokens=%v err=%v", searchType, tokens, err)
+	} else if len(candidates) > 0 {
 		return candidates, false, nil
 	}
 
@@ -313,7 +315,7 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) 
 		LIMIT 300
 	`, typeFilter, whereClause)
 
-	rows, err := h.db.Query(query, args...)
+	rows, err := queryRowsWithRetry(h.db, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("like fallback query: %w", err)
 	}
@@ -330,7 +332,7 @@ func (h *ScreenHandler) fetchLikeCandidates(tokens []string, searchType string) 
 		candidates = append(candidates, buildNameCandidates(recordID, firstName, middleName, surname, singleStringName, entityName, originalScriptName)...)
 	}
 
-	return candidates, nil
+	return candidates, rows.Err()
 }
 
 func wrapConditions(conditions []string) []string {
@@ -407,7 +409,7 @@ func (h *ScreenHandler) fetchAllNamesForRecords(recordIDs map[uint32]bool) ([]na
 		WHERE record_id IN %s
 	`, inClause)
 
-	rows, err := h.db.Query(query, args...)
+	rows, err := queryRowsWithRetry(h.db, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +426,7 @@ func (h *ScreenHandler) fetchAllNamesForRecords(recordIDs map[uint32]bool) ([]na
 		candidates = append(candidates, buildNameCandidates(recordID, firstName, middleName, surname, singleStringName, entityName, originalScriptName)...)
 	}
 
-	return candidates, nil
+	return candidates, rows.Err()
 }
 
 func (h *ScreenHandler) loadRecordsForScreen(ids []uint32, req model.ScreenRequest) ([]model.SanctionsRecord, error) {

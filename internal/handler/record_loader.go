@@ -56,7 +56,7 @@ func loadRecordsBatch(db *sql.DB, ids []uint32, opts batchLoadOptions) ([]model.
 		`, inClause)
 	}
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryRowsWithRetry(db, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func batchLoadRecordNames(db *sql.DB, recordMap map[uint32]*model.SanctionsRecor
 		ORDER BY record_id, id
 	`, inClause)
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryRowsWithRetry(db, query, args...)
 	if err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ func batchLoadRecordDates(db *sql.DB, recordMap map[uint32]*model.SanctionsRecor
 		ORDER BY record_id, id
 	`, inClause)
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryRowsWithRetry(db, query, args...)
 	if err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func batchLoadRecordCountries(db *sql.DB, recordMap map[uint32]*model.SanctionsR
 		ORDER BY sc.record_id, sc.id
 	`, inClause)
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryRowsWithRetry(db, query, args...)
 	if err != nil {
 		return err
 	}
@@ -222,7 +222,7 @@ func batchLoadRecordImages(db *sql.DB, recordMap map[uint32]*model.SanctionsReco
 		ORDER BY record_id, id
 	`, inClause)
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryRowsWithRetry(db, query, args...)
 	if err != nil {
 		return err
 	}
@@ -258,7 +258,7 @@ func batchLoadRecordDescriptions(db *sql.DB, recordMap map[uint32]*model.Sanctio
 		ORDER BY sd.record_id, sd.id
 	`, inClause)
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryRowsWithRetry(db, query, args...)
 	if err != nil {
 		return err
 	}
@@ -290,7 +290,7 @@ func batchLoadRecordAssociations(db *sql.DB, recordMap map[uint32]*model.Sanctio
 		ORDER BY sa.record_id, sa.id
 	`, inClause)
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryRowsWithRetry(db, query, args...)
 	if err != nil {
 		return err
 	}

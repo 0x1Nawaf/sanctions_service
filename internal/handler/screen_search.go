@@ -2,9 +2,13 @@ package handler
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"log"
+	"regexp"
 	"strings"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/nnn/sanctions-service/internal/scoring"
 )
 
@@ -23,7 +27,28 @@ func buildBooleanFTQuery(tokens []string) string {
 }
 
 func buildNgramFTQuery(tokens []string) string {
-	return buildFTQuery(tokens, "")
+	cleaned := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if s := sanitizeFTToken(t); s != "" {
+			cleaned = append(cleaned, s)
+		}
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+
+	// Ngram matching is far broader than word FULLTEXT. Requiring only half of the
+	// tokens (as in buildFTQuery) can match millions of rows on a large feed and
+	// trigger MySQL error 188 (FTS query exceeds result cache limit).
+	ftTerms := make([]string, 0, len(cleaned))
+	for _, t := range cleaned {
+		if scoring.IsNameConnector(t) {
+			ftTerms = append(ftTerms, t)
+			continue
+		}
+		ftTerms = append(ftTerms, "+"+t)
+	}
+	return strings.Join(ftTerms, " ")
 }
 
 // buildFTQuery marks the leading half of the query's tokens as required so the
@@ -34,17 +59,33 @@ func buildNgramFTQuery(tokens []string) string {
 // requiring one excludes every such record from the candidate set before
 // scoring ever runs. They stay in the query as optional terms, where they still
 // contribute to relevance ordering.
+var ftTokenSanitizeRe = regexp.MustCompile(`[+\-><()~*"\\@',;:!?.]+`)
+
+func sanitizeFTToken(token string) string {
+	return strings.TrimSpace(ftTokenSanitizeRe.ReplaceAllString(token, ""))
+}
+
 func buildFTQuery(tokens []string, suffix string) string {
-	significant := 0
+	cleaned := make([]string, 0, len(tokens))
 	for _, t := range tokens {
+		if s := sanitizeFTToken(t); s != "" {
+			cleaned = append(cleaned, s)
+		}
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+
+	significant := 0
+	for _, t := range cleaned {
 		if !scoring.IsNameConnector(t) {
 			significant++
 		}
 	}
 	required := (significant + 1) / 2
 
-	ftTerms := make([]string, 0, len(tokens))
-	for _, t := range tokens {
+	ftTerms := make([]string, 0, len(cleaned))
+	for _, t := range cleaned {
 		if required > 0 && !scoring.IsNameConnector(t) {
 			ftTerms = append(ftTerms, "+"+t+suffix)
 			required--
@@ -98,20 +139,42 @@ func nameSearchQuery(ftIndex, typeFilter string) string {
 
 func (h *ScreenHandler) fetchFulltextCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
 	ftQuery := buildBooleanFTQuery(tokens)
+	if ftQuery == "" {
+		return nil, nil
+	}
 	query := nameSearchQuery(wordFulltextIndex, recordTypeFilterSQL(searchType))
 
 	return h.queryNameCandidates(query, []interface{}{ftQuery, ftQuery})
 }
 
+func (h *ScreenHandler) tryLikeFallback(tokens []string, searchType string) ([]nameCandidate, bool, error) {
+	likeCandidates, err := h.fetchLikeCandidates(tokens, searchType)
+	if err != nil {
+		return nil, true, err
+	}
+	return likeCandidates, true, nil
+}
+
 func (h *ScreenHandler) fetchNgramCandidates(tokens []string, searchType string) ([]nameCandidate, error) {
 	ftQuery := buildNgramFTQuery(tokens)
+	if ftQuery == "" {
+		return nil, nil
+	}
 	query := nameSearchQuery(ngramFulltextIndex, recordTypeFilterSQL(searchType))
 
 	return h.queryNameCandidates(query, []interface{}{ftQuery, ftQuery})
 }
 
+func isFTSCacheLimitErr(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 188 {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "fts query exceeds result cache limit")
+}
+
 func (h *ScreenHandler) queryNameCandidates(query string, args []interface{}) ([]nameCandidate, error) {
-	rows, err := h.db.Query(query, args...)
+	rows, err := queryRowsWithRetry(h.db, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -134,12 +197,13 @@ func (h *ScreenHandler) queryNameCandidates(query string, args []interface{}) ([
 func (h *ScreenHandler) fetchFallbackCandidates(tokens []string, searchType string) ([]nameCandidate, bool, error) {
 	candidates, err := h.fetchNgramCandidates(tokens, searchType)
 	if err != nil {
+		if isFTSCacheLimitErr(err) {
+			log.Printf("screen ngram FTS cache limit exceeded query=%q tokens=%v", buildNgramFTQuery(tokens), tokens)
+			return h.tryLikeFallback(tokens, searchType)
+		}
 		if h.useLikeFallback {
-			likeCandidates, likeErr := h.fetchLikeCandidates(tokens, searchType)
-			if likeErr != nil {
-				return nil, true, likeErr
-			}
-			return likeCandidates, true, nil
+			log.Printf("screen ngram failed, trying LIKE fallback tokens=%v err=%v", tokens, err)
+			return h.tryLikeFallback(tokens, searchType)
 		}
 		return nil, false, fmt.Errorf("ngram query: %w", err)
 	}
@@ -148,11 +212,7 @@ func (h *ScreenHandler) fetchFallbackCandidates(tokens []string, searchType stri
 	}
 
 	if h.useLikeFallback {
-		likeCandidates, err := h.fetchLikeCandidates(tokens, searchType)
-		if err != nil {
-			return nil, true, err
-		}
-		return likeCandidates, true, nil
+		return h.tryLikeFallback(tokens, searchType)
 	}
 
 	return nil, false, nil

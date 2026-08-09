@@ -27,6 +27,20 @@ func TestRecordTypeFilterSQL(t *testing.T) {
 	}
 }
 
+func TestBuildBooleanFTQueryStripsBooleanOperators(t *testing.T) {
+	got := buildBooleanFTQuery([]string{`"john"`, `+smith`, `o'brien`})
+	want := "+john* +smith* obrien*"
+	if got != want {
+		t.Fatalf("buildBooleanFTQuery() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildBooleanFTQueryEmptyAfterSanitize(t *testing.T) {
+	if got := buildBooleanFTQuery([]string{"+", "()", `"`}); got != "" {
+		t.Fatalf("buildBooleanFTQuery() = %q, want empty", got)
+	}
+}
+
 func TestBuildBooleanFTQuery(t *testing.T) {
 	got := buildBooleanFTQuery([]string{"nasser", "ahmed", "kamel", "ali"})
 	want := "+nasser* +ahmed* kamel* ali*"
@@ -35,9 +49,44 @@ func TestBuildBooleanFTQuery(t *testing.T) {
 	}
 }
 
+func TestBuildNgramFTQueryForNouraAlkahtani(t *testing.T) {
+	tokens := tokenizeSearchName("noura alkahtani")
+	if len(tokens) != 2 || tokens[0] != "noura" || tokens[1] != "alkahtani" {
+		t.Fatalf("tokenizeSearchName() = %v", tokens)
+	}
+
+	got := buildNgramFTQuery(tokens)
+	want := "+noura +alkahtani"
+	if got != want {
+		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
+	}
+
+	gotBool := buildBooleanFTQuery(tokens)
+	wantBool := "+noura* alkahtani*"
+	if gotBool != wantBool {
+		t.Fatalf("buildBooleanFTQuery() = %q, want %q", gotBool, wantBool)
+	}
+}
+
 func TestBuildNgramFTQuery(t *testing.T) {
 	got := buildNgramFTQuery([]string{"nasser", "ahmed", "kamel"})
-	want := "+nasser +ahmed kamel"
+	want := "+nasser +ahmed +kamel"
+	if got != want {
+		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildNgramFTQueryRequiresAllSignificantTokens(t *testing.T) {
+	got := buildNgramFTQuery([]string{"John", "Smith"})
+	want := "+John +Smith"
+	if got != want {
+		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildNgramFTQueryKeepsConnectorsOptional(t *testing.T) {
+	got := buildNgramFTQuery([]string{"Nouf", "Bint", "Fahd", "Al", "Saud"})
+	want := "+Nouf Bint +Fahd Al +Saud"
 	if got != want {
 		t.Fatalf("buildNgramFTQuery() = %q, want %q", got, want)
 	}

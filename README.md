@@ -35,7 +35,16 @@ Apply migration `006_ngram_fulltext.sql` before production screening. It require
 ./bin/seeder /path/to/sanctions.json
 ```
 
-Feed files are often **multi‑GB (up to ~15 GB)**. The seeder does one sequential layout scan per file (byte-level, not full JSON parse), shows progress every few seconds, and writes a sidecar cache **`sanctions.json.section-index`** (size + mtime). Unchanged files reuse the cache on the next run so seeding skips the full scan.
+Feed files are often **multi‑GB (up to ~15 GB)**. The seeder does one sequential layout scan per file (byte-level, not full JSON parse), shows progress every few seconds, and writes a sidecar cache `sanctions.json.section-index` (size + mtime). Unchanged files reuse the cache on the next run so seeding skips the full scan.
+
+### Inactivating records absent from the feed
+
+Records missing from the feed are set to `active_status = 'Inactive'` only when the file is the whole universe of records. The seeder requires **both** of the following before it will do that:
+
+1. `_meta.feed_scope` is exactly `complete`. Any other value, and any file without the field, is treated as a partial feed.
+2. The incoming row count and the declared `_meta.record_count` are each at least 90% of the rows already in the database.
+
+If either check fails, the seeder logs `WARN: skipping removed-from-feed inactivation` and applies only the adds and changes in the file. **Always rebuild** `bin/seeder` **from the current source before a load** — these checks live in the binary, so a stale build can still wipe the database with a delta file.
 
 ## Run
 
@@ -44,6 +53,8 @@ Feed files are often **multi‑GB (up to ~15 GB)**. The seeder does one sequenti
 # Listening on :8080
 ```
 
+
+
 ## API
 
 **Screen a name**
@@ -51,6 +62,7 @@ Feed files are often **multi‑GB (up to ~15 GB)**. The seeder does one sequenti
 ```
 POST /api/screen
 ```
+
 ```json
 {
   "name": "Victor Stalony Brown",
@@ -69,6 +81,7 @@ POST /api/screen
 ```
 POST /api/screen/batch
 ```
+
 ```json
 {
   "names": ["John Smith", "Jane Doe"],
@@ -106,13 +119,13 @@ GET /api/historical_updates?page=1&per_page=25
 
 Returns seeder run timestamps, aggregate change counts, interval since the previous run, and per-record snapshots (`display_name`, `countries`, `date_of_birth`). Query params: `include_records=false`, `records_limit` (default 100, max 500).
 
-See [docs/INTEGRATION_HISTORICAL_UPDATES.md](docs/INTEGRATION_HISTORICAL_UPDATES.md) for a full integration guide.
-
 **Health check**
 
 ```
 GET /health
 ```
+
+
 
 ## Infrastructure (minimum for production screening)
 
@@ -120,23 +133,29 @@ These are **server/DB settings**, not application code. Minimum recommendations 
 
 ### MySQL 8.0+
 
-| Setting | Minimum | Notes |
-|---------|---------|--------|
-| `ngram_token_size` | `2` | Required for migration `006_ngram_fulltext.sql`. Add to `my.cnf`: `[mysqld]` → `ngram_token_size=2`, then restart. |
-| `innodb_ft_enable_stopword` | `OFF` | The default stopword list contains two-letter words (`as`, `in`, `is`, `of`, `on`, `or`, `to`, …). At `ngram_token_size=2` those are exactly the bigrams inside ordinary names — `Nasser` tokenizes to `na as ss se er`, and `as` would be dropped — so the ngram fallback silently misses names. Set this OFF and rebuild `sanctions_names_ngram_fulltext`. |
-| RAM | **8 GB+** | 16 GB+ preferred for FULLTEXT on multi‑million `sanctions_names` rows. |
-| Storage | **SSD** | LIKE/ngram/FULLTEXT on HDD will be slow. |
-| `innodb_buffer_pool_size` | **50–70% of RAM** | e.g. 4G on an 8G box. |
+
+| Setting                     | Minimum           | Notes                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ngram_token_size`          | `2`               | Required for migration `006_ngram_fulltext.sql`. Add to `my.cnf`: `[mysqld]` → `ngram_token_size=2`, then restart.                                                                                                                                                                                                                                           |
+| `innodb_ft_enable_stopword` | `OFF`             | The default stopword list contains two-letter words (`as`, `in`, `is`, `of`, `on`, `or`, `to`, …). At `ngram_token_size=2` those are exactly the bigrams inside ordinary names — `Nasser` tokenizes to `na as ss se er`, and `as` would be dropped — so the ngram fallback silently misses names. Set this OFF and rebuild `sanctions_names_ngram_fulltext`. |
+| RAM                         | **8 GB+**         | 16 GB+ preferred for FULLTEXT on multi‑million `sanctions_names` rows.                                                                                                                                                                                                                                                                                       |
+| Storage                     | **SSD**           | LIKE/ngram/FULLTEXT on HDD will be slow.                                                                                                                                                                                                                                                                                                                     |
+| `innodb_buffer_pool_size`   | **50–70% of RAM** | e.g. 4G on an 8G box.                                                                                                                                                                                                                                                                                                                                        |
+
 
 After changing `ngram_token_size`, run migrations including `006_ngram_fulltext.sql`.
 
 ### Application server (Go API)
 
-| Resource | Minimum | Notes |
-|----------|---------|--------|
-| CPU | **2 vCPU** | Scoring is CPU-heavy; 4+ vCPU under concurrent load. |
-| RAM | **512 MB–1 GB** | Go process; DB holds the data. |
+
+| Resource            | Minimum          | Notes                                                                 |
+| ------------------- | ---------------- | --------------------------------------------------------------------- |
+| CPU                 | **2 vCPU**       | Scoring is CPU-heavy; 4+ vCPU under concurrent load.                  |
+| RAM                 | **512 MB–1 GB**  | Go process; DB holds the data.                                        |
 | `DB_MAX_OPEN_CONNS` | **50** (default) | Raise if many concurrent screens; keep below MySQL `max_connections`. |
+
+
+
 
 ### Verifying screening uses the FULLTEXT index
 
@@ -151,15 +170,20 @@ per request on a multi-million-row feed.
 ### Optional (recommended at scale)
 
 - **Slow query log** — `long_query_time=1`, inspect FT/ngram queries.
-- **MySQL `max_connections`** ≥ app pool × replica count + headroom (e.g. 100+).
+- **MySQL** `max_connections` ≥ app pool × replica count + headroom (e.g. 100+).
 - **Do not expose** `ENABLE_PPROF=true` on `:6060` to the public internet.
 - **Read replica** — only if DB CPU/disk is saturated after app optimizations; screening is read-heavy.
 - Set `SCREEN_USE_LIKE_FALLBACK=true` only if ngram index cannot be created (legacy fallback; slow).
 
+
+
 ### Seeder host (one-off / scheduled loads)
 
-| Resource | Minimum |
-|----------|---------|
-| RAM | **8 GB+** |
-| Disk | **2× feed size** (~30 GB for a 15 GB JSON) |
+
+| Resource          | Minimum                                             |
+| ----------------- | --------------------------------------------------- |
+| RAM               | **8 GB+**                                           |
+| Disk              | **2× feed size** (~30 GB for a 15 GB JSON)          |
 | DB write timeouts | Seeder uses 7200s read/write timeouts automatically |
+
+
