@@ -23,6 +23,7 @@ type Config struct {
 	APIKey            string
 	SanctionsJSONPath string
 	ScreenUseLike     bool
+	ScreenShadowScore bool
 	EnablePprof       bool
 }
 
@@ -44,6 +45,7 @@ func Load() *Config {
 		APIKey:            getEnv("API_KEY", ""),
 		SanctionsJSONPath: getEnv("SANCTIONS_JSON_PATH", ""),
 		ScreenUseLike:     getEnvBool("SCREEN_USE_LIKE_FALLBACK", false),
+		ScreenShadowScore: getEnvBool("SCREEN_SHADOW_SCORING", false),
 		EnablePprof:       getEnvBool("ENABLE_PPROF", false),
 	}
 }

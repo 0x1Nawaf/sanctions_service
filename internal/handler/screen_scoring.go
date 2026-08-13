@@ -17,6 +17,10 @@ type recordScore struct {
 	recordID uint32
 	score    int
 	name     string
+	// shadowScore is the candidate scorer's verdict on the same record, best
+	// across all of its name variants. Zero unless shadow scoring is enabled.
+	shadowScore int
+	shadowName  string
 }
 
 func scoreCandidateName(searchName, searchType, candidateName string) int {
@@ -26,15 +30,48 @@ func scoreCandidateName(searchName, searchType, candidateName string) int {
 	return scoring.ScoreName(searchName, candidateName)
 }
 
-func mergeCandidateScores(best map[uint32]recordScore, candidates []nameCandidate, searchName, searchType string, minScore int) {
+// scoreCandidateNameV2 is the candidate replacement scorer. Only individual
+// scoring is being reworked, so entity searches score identically under both
+// and will show no shadow difference.
+func scoreCandidateNameV2(searchName, searchType, candidateName string) int {
+	if searchType == "entity" {
+		return scoring.ScoreEntityName(searchName, candidateName)
+	}
+	return scoring.ScoreNameV2(searchName, candidateName)
+}
+
+// mergeCandidateScores keeps the best-scoring name variant per record.
+//
+// When shadow is set, a record is also retained if only the candidate scorer
+// would have alerted on it. Those records are excluded from the response by
+// screenWithScore; carrying them this far is what makes it possible to observe
+// what the candidate scorer would have promoted, rather than only what it would
+// have suppressed.
+func mergeCandidateScores(best map[uint32]recordScore, candidates []nameCandidate, searchName, searchType string, minScore int, shadow bool) {
 	for _, c := range candidates {
 		s := scoreCandidateName(searchName, searchType, c.name)
-		if minScore > 0 && s < minScore {
+		shadowScore := 0
+		if shadow {
+			shadowScore = scoreCandidateNameV2(searchName, searchType, c.name)
+		}
+		if minScore > 0 && s < minScore && shadowScore < minScore {
 			continue
 		}
-		if existing, ok := best[c.recordID]; !ok || s > existing.score {
-			best[c.recordID] = recordScore{recordID: c.recordID, score: s, name: c.name}
+
+		existing, ok := best[c.recordID]
+		if !ok {
+			existing = recordScore{recordID: c.recordID, score: -1, shadowScore: -1}
 		}
+		if s > existing.score {
+			existing.score = s
+			existing.name = c.name
+		}
+		if shadowScore > existing.shadowScore {
+			existing.shadowScore = shadowScore
+			existing.shadowName = c.name
+		}
+		existing.recordID = c.recordID
+		best[c.recordID] = existing
 	}
 }
 

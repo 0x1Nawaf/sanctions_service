@@ -94,6 +94,34 @@ POST /api/screen/batch
 
 Each server log line for screening includes phase timings (`fetch`, `expand`, `score`, `like_retry`, `hydrate`, `total`).
 
+### Shadow scoring
+
+`SCREEN_SHADOW_SCORING=true` runs a candidate replacement scorer alongside the
+live one. It is an **observation mode and changes nothing**: the same records
+come back, scored and ordered by the live scorer exactly as before. Each result
+gains `shadow_score` and `shadow_matched_name`, and every screen logs a
+comparison line:
+
+```
+screen shadow query="..." type=individual min_score=75 live_alerts=8 agreed=3 suppressed=5 promoted=1 mean_delta=-14
+```
+
+- `suppressed` — the live scorer alerts, the candidate scorer does not.
+- `promoted` — the candidate scorer alerts, the live scorer does not. These
+  records are **not** returned; they are counted so a run can measure what the
+  change would surface, not only what it would hide.
+
+The candidate scorer weights name tokens by how rare they are, scores position
+along the name chain rather than treating a name as a bag of tokens, and caps
+matches assembled only from very common name parts. See
+`analysis/SCORING_PLAN.md` for the measurements behind it.
+
+At startup the service builds the token-frequency table with one pass over
+`sanctions_names`, in the background. Until that finishes it falls back to a
+static table of common Arabic name parts, so early requests are scored
+sensibly but not identically — allow for the load to complete before taking
+measurements. The table is only built when this flag is on.
+
 **List records**
 
 ```

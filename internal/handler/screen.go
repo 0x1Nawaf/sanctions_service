@@ -20,10 +20,17 @@ const maxBatchScreenNames = 50
 type ScreenHandler struct {
 	db              *sql.DB
 	useLikeFallback bool
+	// shadowScoring runs the candidate scorer alongside the live one and
+	// reports both. It never changes which records are returned.
+	shadowScoring bool
 }
 
-func NewScreenHandler(db *sql.DB, useLikeFallback bool) *ScreenHandler {
-	return &ScreenHandler{db: db, useLikeFallback: useLikeFallback}
+func NewScreenHandler(db *sql.DB, useLikeFallback, shadowScoring bool) *ScreenHandler {
+	return &ScreenHandler{
+		db:              db,
+		useLikeFallback: useLikeFallback,
+		shadowScoring:   shadowScoring,
+	}
 }
 
 var sanitizeRe = regexp.MustCompile(`[+\-><()~*"\\@.,;:!?']+`)
@@ -156,7 +163,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 
 	bestByRecord := make(map[uint32]recordScore)
 	t0 = time.Now()
-	mergeCandidateScores(bestByRecord, candidates, req.Name, req.SearchType, req.MinScore)
+	mergeCandidateScores(bestByRecord, candidates, req.Name, req.SearchType, req.MinScore, h.shadowScoring)
 
 	preliminary := preliminaryScores(candidates, req.Name, req.SearchType)
 	expandIDs := selectRecordIDsForAliasExpansion(preliminary, req.MinScore)
@@ -168,7 +175,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		if err != nil {
 			return nil, err
 		}
-		mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(seen, expanded), req.Name, req.SearchType, req.MinScore)
+		mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(seen, expanded), req.Name, req.SearchType, req.MinScore, h.shadowScoring)
 		markCandidatesSeen(seen, expanded)
 	}
 	timings.score = time.Since(t0)
@@ -185,7 +192,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 				usedLike = true
 				likePreliminary := preliminaryScores(fallbackCandidates, req.Name, req.SearchType)
 				likeExpandIDs := selectRecordIDsForAliasExpansion(likePreliminary, req.MinScore)
-				mergeCandidateScores(bestByRecord, fallbackCandidates, req.Name, req.SearchType, req.MinScore)
+				mergeCandidateScores(bestByRecord, fallbackCandidates, req.Name, req.SearchType, req.MinScore, h.shadowScoring)
 				fallbackSeen := make(map[string]bool)
 				markCandidatesSeen(fallbackSeen, fallbackCandidates)
 				if len(likeExpandIDs) > 0 {
@@ -193,7 +200,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 					if err != nil {
 						return nil, err
 					}
-					mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(fallbackSeen, expanded), req.Name, req.SearchType, req.MinScore)
+					mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(fallbackSeen, expanded), req.Name, req.SearchType, req.MinScore, h.shadowScoring)
 				}
 			}
 		}
@@ -204,10 +211,28 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		return []model.ScreenResult{}, nil
 	}
 
+	// Records the candidate scorer would have alerted on but the live scorer
+	// would not are dropped here: shadow mode observes, it does not change what
+	// is returned.
 	sortedResults := make([]recordScore, 0, len(bestByRecord))
+	var shadow shadowComparison
 	for _, s := range bestByRecord {
+		if h.shadowScoring {
+			shadow.observe(s, req.MinScore)
+		}
+		if req.MinScore > 0 && s.score < req.MinScore {
+			continue
+		}
 		sortedResults = append(sortedResults, s)
 	}
+	if h.shadowScoring {
+		logShadowComparison(req.Name, req.SearchType, req.MinScore, shadow)
+	}
+
+	if len(sortedResults) == 0 {
+		return []model.ScreenResult{}, nil
+	}
+
 	sort.Slice(sortedResults, func(i, j int) bool {
 		return sortedResults[i].score > sortedResults[j].score
 	})
@@ -240,13 +265,19 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		if !ok {
 			continue
 		}
-		results = append(results, model.ScreenResult{
+		result := model.ScreenResult{
 			Record:         rec,
 			Score:          s.score,
 			MatchedName:    s.name,
 			IsCustomList:   rec.CustomListID != nil,
 			CustomListName: rec.CustomListName,
-		})
+		}
+		if h.shadowScoring {
+			shadowScore := s.shadowScore
+			result.ShadowScore = &shadowScore
+			result.ShadowMatchedName = s.shadowName
+		}
+		results = append(results, result)
 	}
 
 	resultCount = len(results)

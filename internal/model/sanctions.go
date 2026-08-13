@@ -234,6 +234,13 @@ type ScreenResult struct {
 	MatchedName    string          `json:"matched_name"`
 	IsCustomList   bool            `json:"is_custom_list"`
 	CustomListName string          `json:"custom_list_name,omitempty"`
+
+	// ShadowScore is the candidate scorer's verdict on the same record,
+	// present only while SCREEN_SHADOW_SCORING is on. It is reported for
+	// comparison and has no effect on Score, on ordering, or on which records
+	// appear at all.
+	ShadowScore       *int   `json:"shadow_score,omitempty"`
+	ShadowMatchedName string `json:"shadow_matched_name,omitempty"`
 }
 
 type ScreenResponse struct {

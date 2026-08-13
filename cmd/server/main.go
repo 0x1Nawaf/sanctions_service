@@ -32,9 +32,21 @@ func main() {
 		}()
 	}
 
+	if cfg.ScreenShadowScore {
+		// The table is a full pass over sanctions_names, so it is built in the
+		// background: screening starts immediately and the candidate scorer
+		// falls back to its static table of common name parts until this lands.
+		go func() {
+			if err := handler.LoadTokenWeights(db); err != nil {
+				log.Printf("token weights load failed, shadow scoring will use fallback weights: %v", err)
+			}
+		}()
+		log.Println("Shadow scoring enabled (reports shadow_score; does not affect results)")
+	}
+
 	healthH := handler.NewHealthHandler(db)
 	recordsH := handler.NewRecordsHandler(db)
-	screenH := handler.NewScreenHandler(db, cfg.ScreenUseLike)
+	screenH := handler.NewScreenHandler(db, cfg.ScreenUseLike, cfg.ScreenShadowScore)
 	customListH := handler.NewCustomListHandler(db)
 	historicalH := handler.NewHistoricalUpdatesHandler(db)
 
