@@ -20,9 +20,12 @@ type shadowComparison struct {
 	scoreDelta int
 }
 
+// observe compares the two scorers on one record, after any secondary
+// identifier adjustment. Both sides receive the same adjustment, so the
+// comparison stays a comparison of the scorers rather than of the factors.
 func (c *shadowComparison) observe(s recordScore, minScore int) {
-	liveAlerts := minScore <= 0 || s.score >= minScore
-	shadowAlerts := minScore <= 0 || s.shadowScore >= minScore
+	liveAlerts := minScore <= 0 || s.finalScore >= minScore
+	shadowAlerts := minScore <= 0 || s.shadowFinalScore >= minScore
 
 	if liveAlerts {
 		c.liveTotal++
@@ -30,7 +33,7 @@ func (c *shadowComparison) observe(s recordScore, minScore int) {
 	switch {
 	case liveAlerts && shadowAlerts:
 		c.agreed++
-		c.scoreDelta += s.shadowScore - s.score
+		c.scoreDelta += s.shadowFinalScore - s.finalScore
 	case liveAlerts && !shadowAlerts:
 		c.suppressed++
 	case !liveAlerts && shadowAlerts:

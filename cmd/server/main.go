@@ -44,9 +44,16 @@ func main() {
 		log.Println("Shadow scoring enabled (reports shadow_score; does not affect results)")
 	}
 
+	// Resolves a caller's ISO code or country name onto the feed's own country
+	// codes. Screening works without it; supplied citizenships simply report
+	// as unresolved and stay neutral.
+	if err := handler.LoadCountryIndex(db); err != nil {
+		log.Printf("country index load failed, citizenship matching will be inactive: %v", err)
+	}
+
 	healthH := handler.NewHealthHandler(db)
 	recordsH := handler.NewRecordsHandler(db)
-	screenH := handler.NewScreenHandler(db, cfg.ScreenUseLike, cfg.ScreenShadowScore)
+	screenH := handler.NewScreenHandler(db, cfg.ScreenUseLike, cfg.ScreenShadowScore, cfg.ScreenMismatchPolicy)
 	customListH := handler.NewCustomListHandler(db)
 	historicalH := handler.NewHistoricalUpdatesHandler(db)
 

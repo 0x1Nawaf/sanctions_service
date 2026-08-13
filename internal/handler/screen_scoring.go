@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/nnn/sanctions-service/internal/model"
 	"github.com/nnn/sanctions-service/internal/scoring"
 )
 
@@ -21,6 +22,19 @@ type recordScore struct {
 	// across all of its name variants. Zero unless shadow scoring is enabled.
 	shadowScore int
 	shadowName  string
+
+	// finalScore is score after secondary identifiers have been applied. It
+	// equals score when the caller supplied none, and it is what the response
+	// reports and orders by.
+	finalScore       int
+	shadowFinalScore int
+	factors          *model.MatchFactors
+	// factorAdjustment is the total the identifiers contributed, kept separate
+	// because it breaks ties that finalScore cannot. A perfect name match is
+	// already at 100, so confirming its date of birth cannot raise it any
+	// further — but it should still be shown ahead of an equally-scoring record
+	// whose identifiers are absent or contradictory.
+	factorAdjustment int
 }
 
 func scoreCandidateName(searchName, searchType, candidateName string) int {

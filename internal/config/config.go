@@ -9,22 +9,23 @@ import (
 )
 
 type Config struct {
-	DBHost            string
-	DBPort            string
-	DBName            string
-	DBUser            string
-	DBPassword        string
-	DBMaxOpenConns    int
-	DBMaxIdleConns    int
-	DBConnMaxLifetime time.Duration
-	DBReadTimeout     time.Duration
-	DBWriteTimeout    time.Duration
-	ServerPort        string
-	APIKey            string
-	SanctionsJSONPath string
-	ScreenUseLike     bool
-	ScreenShadowScore bool
-	EnablePprof       bool
+	DBHost               string
+	DBPort               string
+	DBName               string
+	DBUser               string
+	DBPassword           string
+	DBMaxOpenConns       int
+	DBMaxIdleConns       int
+	DBConnMaxLifetime    time.Duration
+	DBReadTimeout        time.Duration
+	DBWriteTimeout       time.Duration
+	ServerPort           string
+	APIKey               string
+	SanctionsJSONPath    string
+	ScreenUseLike        bool
+	ScreenShadowScore    bool
+	ScreenMismatchPolicy string
+	EnablePprof          bool
 }
 
 func Load() *Config {
@@ -46,7 +47,10 @@ func Load() *Config {
 		SanctionsJSONPath: getEnv("SANCTIONS_JSON_PATH", ""),
 		ScreenUseLike:     getEnvBool("SCREEN_USE_LIKE_FALLBACK", false),
 		ScreenShadowScore: getEnvBool("SCREEN_SHADOW_SCORING", false),
-		EnablePprof:       getEnvBool("ENABLE_PPROF", false),
+		// downweight (default) keeps a strong name match in the alert set even
+		// when a supplied identifier contradicts it; filter lets it drop out.
+		ScreenMismatchPolicy: getEnv("SCREEN_FACTOR_MISMATCH_POLICY", "downweight"),
+		EnablePprof:          getEnvBool("ENABLE_PPROF", false),
 	}
 }
 

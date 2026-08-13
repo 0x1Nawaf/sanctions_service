@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,13 +24,17 @@ type ScreenHandler struct {
 	// shadowScoring runs the candidate scorer alongside the live one and
 	// reports both. It never changes which records are returned.
 	shadowScoring bool
+	// factorPolicy decides whether a contradicting secondary identifier may
+	// carry a strong name match out of the alert set.
+	factorPolicy factorPolicy
 }
 
-func NewScreenHandler(db *sql.DB, useLikeFallback, shadowScoring bool) *ScreenHandler {
+func NewScreenHandler(db *sql.DB, useLikeFallback, shadowScoring bool, mismatchPolicy string) *ScreenHandler {
 	return &ScreenHandler{
 		db:              db,
 		useLikeFallback: useLikeFallback,
 		shadowScoring:   shadowScoring,
+		factorPolicy:    parseFactorPolicy(mismatchPolicy),
 	}
 }
 
@@ -59,6 +64,11 @@ func (h *ScreenHandler) Screen(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.screenWithScore(req)
 	if err != nil {
+		var bad badRequestError
+		if errors.As(err, &bad) {
+			writeError(w, http.StatusBadRequest, bad.Error())
+			return
+		}
 		log.Printf("screen failed query=%q type=%s err=%v", req.Name, req.SearchType, err)
 		writeError(w, http.StatusInternalServerError, "screening failed")
 		return
@@ -92,8 +102,19 @@ func (h *ScreenHandler) ScreenBatch(w http.ResponseWriter, r *http.Request) {
 		MinScore:       req.MinScore,
 		IncludeNotes:   req.IncludeNotes,
 		IncludeDetails: req.IncludeDetails,
+		DateOfBirth:    req.DateOfBirth,
+		Citizenship:    req.Citizenship,
 	}
 	normalizeScreenRequest(&screenReq)
+
+	// Reject a malformed identifier once, rather than once per name.
+	if _, err := parseFactorInputs(screenReq.DateOfBirth, screenReq.Citizenship); err != nil {
+		var bad badRequestError
+		if errors.As(err, &bad) {
+			writeError(w, http.StatusBadRequest, bad.Error())
+			return
+		}
+	}
 
 	batchResults := make([]model.BatchScreenResult, 0, len(req.Names))
 	for _, name := range req.Names {
@@ -149,6 +170,23 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		logScreenTimings(req.Name, req.SearchType, timings, initialCandidateCount, expandedRecordCount, resultCount, usedLike, usedBroad)
 	}()
 
+	factors, err := parseFactorInputs(req.DateOfBirth, req.Citizenship)
+	if err != nil {
+		return nil, err
+	}
+
+	// A confirmed identifier can lift a record over the threshold, so when one
+	// is supplied the shortlist is widened by the largest possible promotion.
+	// Without this the record would already have been discarded by the time the
+	// factor was applied.
+	retentionFloor := req.MinScore
+	if factors.supplied() {
+		retentionFloor -= scoring.MaxFactorBoost
+		if retentionFloor < 0 {
+			retentionFloor = 0
+		}
+	}
+
 	t0 := time.Now()
 	candidates, usedBroadRetry, err := h.fetchCandidates(req.Name, req.SearchType)
 	timings.fetchCandidates = time.Since(t0)
@@ -163,7 +201,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 
 	bestByRecord := make(map[uint32]recordScore)
 	t0 = time.Now()
-	mergeCandidateScores(bestByRecord, candidates, req.Name, req.SearchType, req.MinScore, h.shadowScoring)
+	mergeCandidateScores(bestByRecord, candidates, req.Name, req.SearchType, retentionFloor, h.shadowScoring)
 
 	preliminary := preliminaryScores(candidates, req.Name, req.SearchType)
 	expandIDs := selectRecordIDsForAliasExpansion(preliminary, req.MinScore)
@@ -175,7 +213,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		if err != nil {
 			return nil, err
 		}
-		mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(seen, expanded), req.Name, req.SearchType, req.MinScore, h.shadowScoring)
+		mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(seen, expanded), req.Name, req.SearchType, retentionFloor, h.shadowScoring)
 		markCandidatesSeen(seen, expanded)
 	}
 	timings.score = time.Since(t0)
@@ -192,7 +230,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 				usedLike = true
 				likePreliminary := preliminaryScores(fallbackCandidates, req.Name, req.SearchType)
 				likeExpandIDs := selectRecordIDsForAliasExpansion(likePreliminary, req.MinScore)
-				mergeCandidateScores(bestByRecord, fallbackCandidates, req.Name, req.SearchType, req.MinScore, h.shadowScoring)
+				mergeCandidateScores(bestByRecord, fallbackCandidates, req.Name, req.SearchType, retentionFloor, h.shadowScoring)
 				fallbackSeen := make(map[string]bool)
 				markCandidatesSeen(fallbackSeen, fallbackCandidates)
 				if len(likeExpandIDs) > 0 {
@@ -200,7 +238,7 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 					if err != nil {
 						return nil, err
 					}
-					mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(fallbackSeen, expanded), req.Name, req.SearchType, req.MinScore, h.shadowScoring)
+					mergeCandidateScores(bestByRecord, dedupeExpandedCandidates(fallbackSeen, expanded), req.Name, req.SearchType, retentionFloor, h.shadowScoring)
 				}
 			}
 		}
@@ -211,16 +249,33 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		return []model.ScreenResult{}, nil
 	}
 
+	scored := make([]recordScore, 0, len(bestByRecord))
+	for _, s := range bestByRecord {
+		s.finalScore = s.score
+		s.shadowFinalScore = s.shadowScore
+		scored = append(scored, s)
+	}
+	sort.Slice(scored, func(i, j int) bool { return scored[i].score > scored[j].score })
+
+	if factors.supplied() {
+		t0 = time.Now()
+		if err := h.applySecondaryIdentifiers(scored, factors, req.MinScore); err != nil {
+			return nil, err
+		}
+		timings.factors = time.Since(t0)
+		sortByScoreThenCorroboration(scored)
+	}
+
 	// Records the candidate scorer would have alerted on but the live scorer
 	// would not are dropped here: shadow mode observes, it does not change what
 	// is returned.
-	sortedResults := make([]recordScore, 0, len(bestByRecord))
+	sortedResults := make([]recordScore, 0, len(scored))
 	var shadow shadowComparison
-	for _, s := range bestByRecord {
+	for _, s := range scored {
 		if h.shadowScoring {
 			shadow.observe(s, req.MinScore)
 		}
-		if req.MinScore > 0 && s.score < req.MinScore {
+		if req.MinScore > 0 && s.finalScore < req.MinScore {
 			continue
 		}
 		sortedResults = append(sortedResults, s)
@@ -232,10 +287,6 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 	if len(sortedResults) == 0 {
 		return []model.ScreenResult{}, nil
 	}
-
-	sort.Slice(sortedResults, func(i, j int) bool {
-		return sortedResults[i].score > sortedResults[j].score
-	})
 
 	limit := 50
 	if len(sortedResults) > limit {
@@ -267,13 +318,18 @@ func (h *ScreenHandler) screenWithScore(req model.ScreenRequest) ([]model.Screen
 		}
 		result := model.ScreenResult{
 			Record:         rec,
-			Score:          s.score,
+			Score:          s.finalScore,
 			MatchedName:    s.name,
 			IsCustomList:   rec.CustomListID != nil,
 			CustomListName: rec.CustomListName,
 		}
+		if s.factors != nil {
+			nameScore := s.score
+			result.NameScore = &nameScore
+			result.MatchFactors = s.factors
+		}
 		if h.shadowScoring {
-			shadowScore := s.shadowScore
+			shadowScore := s.shadowFinalScore
 			result.ShadowScore = &shadowScore
 			result.ShadowMatchedName = s.shadowName
 		}

@@ -34,24 +34,24 @@ func (ns *NullString) UnmarshalJSON(data []byte) error {
 }
 
 type SanctionsRecord struct {
-	ID           uint32     `json:"id"`
-	RecordType   NullString `json:"record_type"`
-	Action       NullString `json:"action"`
-	ActionDate   NullString `json:"action_date"`
-	Gender       NullString `json:"gender"`
-	ActiveStatus NullString `json:"active_status"`
-	Deceased     NullString `json:"deceased"`
-	ProfileNotes NullString `json:"profile_notes"`
-	CustomListID   *uint32 `json:"custom_list_id,omitempty"`
-	CustomListName string  `json:"custom_list_name,omitempty"`
-	Source         string  `json:"source"`
+	ID             uint32     `json:"id"`
+	RecordType     NullString `json:"record_type"`
+	Action         NullString `json:"action"`
+	ActionDate     NullString `json:"action_date"`
+	Gender         NullString `json:"gender"`
+	ActiveStatus   NullString `json:"active_status"`
+	Deceased       NullString `json:"deceased"`
+	ProfileNotes   NullString `json:"profile_notes"`
+	CustomListID   *uint32    `json:"custom_list_id,omitempty"`
+	CustomListName string     `json:"custom_list_name,omitempty"`
+	Source         string     `json:"source"`
 
-	Names        []SanctionsName               `json:"names,omitempty"`
-	Dates        []SanctionsDate               `json:"dates,omitempty"`
-	Countries    []SanctionsCountry            `json:"countries,omitempty"`
-	Images       []SanctionsImage              `json:"images,omitempty"`
-	Descriptions []SanctionsDescriptionDetail  `json:"descriptions,omitempty"`
-	Associations []SanctionsAssociationDetail  `json:"associations,omitempty"`
+	Names        []SanctionsName              `json:"names,omitempty"`
+	Dates        []SanctionsDate              `json:"dates,omitempty"`
+	Countries    []SanctionsCountry           `json:"countries,omitempty"`
+	Images       []SanctionsImage             `json:"images,omitempty"`
+	Descriptions []SanctionsDescriptionDetail `json:"descriptions,omitempty"`
+	Associations []SanctionsAssociationDetail `json:"associations,omitempty"`
 }
 
 type SanctionsName struct {
@@ -128,10 +128,10 @@ type SanctionsDescriptionDetail struct {
 }
 
 type SanctionsAssociationDetail struct {
-	AssociateID      uint32     `json:"associate_id"`
-	AssociateName    string     `json:"associate_name"`
-	Relationship     NullString `json:"relationship"`
-	IsEx             bool       `json:"is_ex"`
+	AssociateID   uint32     `json:"associate_id"`
+	AssociateName string     `json:"associate_name"`
+	Relationship  NullString `json:"relationship"`
+	IsEx          bool       `json:"is_ex"`
 }
 
 type SanctionsRole struct {
@@ -200,11 +200,17 @@ type SanctionsAssociation struct {
 // API request/response types
 
 type ScreenRequest struct {
-	Name            string `json:"name"`
-	SearchType      string `json:"search_type"`
-	MinScore        int    `json:"min_score"`
-	IncludeNotes    bool   `json:"include_notes"`
-	IncludeDetails  bool   `json:"include_details"`
+	Name           string `json:"name"`
+	SearchType     string `json:"search_type"`
+	MinScore       int    `json:"min_score"`
+	IncludeNotes   bool   `json:"include_notes"`
+	IncludeDetails bool   `json:"include_details"`
+
+	// Optional secondary identifiers. They adjust the score of records already
+	// found by name and never affect which records are retrieved. Omitting
+	// them screens exactly as before.
+	DateOfBirth string       `json:"date_of_birth,omitempty"`
+	Citizenship StringOrList `json:"citizenship,omitempty"`
 }
 
 type BatchScreenRequest struct {
@@ -213,6 +219,31 @@ type BatchScreenRequest struct {
 	MinScore       int      `json:"min_score"`
 	IncludeNotes   bool     `json:"include_notes"`
 	IncludeDetails bool     `json:"include_details"`
+
+	DateOfBirth string       `json:"date_of_birth,omitempty"`
+	Citizenship StringOrList `json:"citizenship,omitempty"`
+}
+
+// StringOrList accepts either a single value or an array, so a caller with one
+// citizenship does not have to wrap it in an array.
+type StringOrList []string
+
+func (s *StringOrList) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		if single == "" {
+			*s = nil
+		} else {
+			*s = StringOrList{single}
+		}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return err
+	}
+	*s = StringOrList(many)
+	return nil
 }
 
 type BatchScreenResult struct {
@@ -235,6 +266,13 @@ type ScreenResult struct {
 	IsCustomList   bool            `json:"is_custom_list"`
 	CustomListName string          `json:"custom_list_name,omitempty"`
 
+	// NameScore is the score before secondary identifiers were applied,
+	// present only when the caller supplied one. Score carries the adjusted
+	// figure, so the two differ exactly by the sum of the adjustments in
+	// MatchFactors.
+	NameScore    *int          `json:"name_score,omitempty"`
+	MatchFactors *MatchFactors `json:"match_factors,omitempty"`
+
 	// ShadowScore is the candidate scorer's verdict on the same record,
 	// present only while SCREEN_SHADOW_SCORING is on. It is reported for
 	// comparison and has no effect on Score, on ordering, or on which records
@@ -243,11 +281,24 @@ type ScreenResult struct {
 	ShadowMatchedName string `json:"shadow_matched_name,omitempty"`
 }
 
+// MatchFactor records what one secondary identifier contributed, so a reviewer
+// can see why a score moved rather than only that it did.
+type MatchFactor struct {
+	Status      string `json:"status"`
+	Adjustment  int    `json:"adjustment"`
+	RecordValue string `json:"record_value,omitempty"`
+}
+
+type MatchFactors struct {
+	DOB         *MatchFactor `json:"dob,omitempty"`
+	Citizenship *MatchFactor `json:"citizenship,omitempty"`
+}
+
 type ScreenResponse struct {
-	Query      string         `json:"query"`
-	MinScore   int            `json:"min_score"`
-	Total      int            `json:"total"`
-	Results    []ScreenResult `json:"results"`
+	Query    string         `json:"query"`
+	MinScore int            `json:"min_score"`
+	Total    int            `json:"total"`
+	Results  []ScreenResult `json:"results"`
 }
 
 type PaginatedResponse struct {
@@ -260,18 +311,18 @@ type PaginatedResponse struct {
 // Custom list upload types
 
 type CustomListEntry struct {
-	RecordType   string `json:"record_type"`
-	Gender       string `json:"gender,omitempty"`
-	FirstName    string `json:"first_name,omitempty"`
-	MiddleName   string `json:"middle_name,omitempty"`
-	Surname      string `json:"surname,omitempty"`
-	EntityName   string `json:"entity_name,omitempty"`
-	DateOfBirth  string `json:"date_of_birth,omitempty"`
-	Nationality  string `json:"nationality,omitempty"`
-	IDType       string `json:"id_type,omitempty"`
-	IDValue      string `json:"id_value,omitempty"`
-	Notes        string `json:"notes,omitempty"`
-	Aliases      []CustomListAlias `json:"aliases,omitempty"`
+	RecordType  string            `json:"record_type"`
+	Gender      string            `json:"gender,omitempty"`
+	FirstName   string            `json:"first_name,omitempty"`
+	MiddleName  string            `json:"middle_name,omitempty"`
+	Surname     string            `json:"surname,omitempty"`
+	EntityName  string            `json:"entity_name,omitempty"`
+	DateOfBirth string            `json:"date_of_birth,omitempty"`
+	Nationality string            `json:"nationality,omitempty"`
+	IDType      string            `json:"id_type,omitempty"`
+	IDValue     string            `json:"id_value,omitempty"`
+	Notes       string            `json:"notes,omitempty"`
+	Aliases     []CustomListAlias `json:"aliases,omitempty"`
 }
 
 type CustomListAlias struct {

@@ -75,6 +75,7 @@ POST /api/screen
 
 - `include_notes` (default `false`) — load `profile_notes` in each match (use `GET /api/records/{id}` for full detail).
 - `include_details` (default `false`) — load dates, countries, images, descriptions, associations.
+- `date_of_birth`, `citizenship` (both optional) — see [secondary identifiers](#secondary-identifiers-date-of-birth-and-citizenship).
 
 **Batch screen (up to 50 names)**
 
@@ -92,7 +93,103 @@ POST /api/screen/batch
 }
 ```
 
-Each server log line for screening includes phase timings (`fetch`, `expand`, `score`, `like_retry`, `hydrate`, `total`).
+Each server log line for screening includes phase timings (`fetch`, `expand`, `score`, `like_retry`, `factors`, `hydrate`, `total`).
+
+### Secondary identifiers: date of birth and citizenship
+
+A name on its own often cannot tell two people apart. Several sanctioned records
+share one very common Arabic name and all score 100 against the same query,
+which leaves a reviewer with a handful of identical-looking alerts and no way to
+choose between them.
+
+Supplying either identifier resolves that. They are **optional and additive** —
+omit them and screening behaves exactly as it did before, with no extra queries
+and no new fields in the response.
+
+```json
+{
+  "name": "Mohammed Abdullah Al Otaibi",
+  "search_type": "individual",
+  "min_score": 75,
+  "date_of_birth": "1985-03-12",
+  "citizenship": "SA"
+}
+```
+
+`citizenship` accepts a single value or an array, given as an ISO alpha-2 or
+alpha-3 code, a country name, or the feed's own code. `date_of_birth` accepts
+`1985`, `1985-03`, `1985-03-12`, or `12-Mar-1985`. A purely numeric day-first
+date such as `03/04/1985` is **rejected with a 400** rather than guessed at: it
+is 3 April in most of the world and 4 March in the United States.
+
+Each result then carries the name score it started from and what each identifier
+concluded:
+
+```json
+{
+  "score": 100,
+  "name_score": 100,
+  "match_factors": {
+    "dob":         { "status": "confirmed_exact", "adjustment": 10, "record_value": "1985-03-12" },
+    "citizenship": { "status": "confirmed",       "adjustment": 6,  "record_value": "SAARAB" }
+  }
+}
+```
+
+**Three rules govern the adjustments, and they are what make this safe to turn on:**
+
+*Absence is neutral.* Only 57% of persons in the feed carry a date of birth at
+all. A record the vendor holds no date for is never penalised for it — otherwise
+real hits would be hidden behind gaps in the data rather than behind anything
+about the person. `status` reports `unavailable` and the adjustment is `0`.
+
+*Confirmation lifts, and can surface a match a name alone would have missed.*
+A confirmed identifier is worth up to +16, so a record scoring 71 on name — below
+a threshold of 75, and previously invisible — is returned at 87 once its date of
+birth and citizenship both agree. The shortlist is widened by exactly that much
+before the identifiers are applied, so nothing that a confirmation could promote
+has already been discarded.
+
+*Contradiction is a review note, not a verdict.* Feed dates are frequently
+approximate and citizenship is under-recorded, so by default a contradicting
+identifier lowers the score but will not on its own remove a strong name match
+(90+) from the alert set; it stays, marked `contradicted`, at the threshold. Set
+`SCREEN_FACTOR_MISMATCH_POLICY=filter` to let contradictions carry those records
+out of the results entirely — lower alert volume, and a decision for compliance
+to own rather than for this service to assume.
+
+| status | adjustment | meaning |
+| --- | --- | --- |
+| `confirmed_exact` | +10 | day, month and year all agree |
+| `confirmed_month` | +8 | year and month agree; one side has no day |
+| `confirmed_year` | +6 | years agree; one side has no month |
+| `near` | +3 | one year apart |
+| `contradicted` | −10 / −25 | 2–3 years apart / more than 3 |
+| `confirmed` (citizenship) | +6 | any supplied citizenship matches any on the record |
+| `contradicted` (citizenship) | −12 | the record lists citizenships and none match |
+| `unavailable` | 0 | the record holds no such value |
+| `not_supplied` | 0 | the caller sent no such value |
+| `unresolved` | 0 | the country could not be interpreted |
+
+Two details worth knowing:
+
+- **One year apart scores as `near`, not as a mismatch.** Gulf clients often hold
+  a Hijri date of birth, and converting between the Hijri and Gregorian calendars
+  lands a year either side often enough that treating it as a contradiction would
+  suppress genuine matches. Full Hijri conversion is not implemented; this
+  tolerance stands in for it.
+- **Corroboration breaks ties in the ordering.** A perfect name match is already
+  at 100, so confirming its date of birth cannot raise it further. Results that
+  score equally are therefore ordered by how well their identifiers agree, which
+  is what puts the right record at the top of a set of identical names.
+
+Citizenship comparison needs the country index, built from
+`sanctions_ref_countries` at startup, because the feed does not use ISO 3166 —
+Saudi Arabia is `SAARAB`, Bahrain is `BAHRN`, Yemen is `YEMAR`. If that table is
+empty the feature degrades rather than breaks: supplied citizenships report as
+`unresolved` and stay neutral. Country names not covered by the built-in ISO
+alias list still resolve by name; extend `isoCountryAliases` in
+`internal/scoring/secondary.go` as new nationalities appear.
 
 ### Shadow scoring
 

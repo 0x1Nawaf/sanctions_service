@@ -50,11 +50,13 @@ func TestMergeCandidateScoresShadowRetainsPromotions(t *testing.T) {
 }
 
 func TestShadowComparisonCounts(t *testing.T) {
+	// observe reads the post-adjustment scores, which equal the name scores
+	// when no secondary identifier was supplied.
 	var c shadowComparison
-	c.observe(recordScore{score: 90, shadowScore: 95}, 75) // both alert
-	c.observe(recordScore{score: 88, shadowScore: 40}, 75) // live only
-	c.observe(recordScore{score: 60, shadowScore: 80}, 75) // shadow only
-	c.observe(recordScore{score: 30, shadowScore: 20}, 75) // neither
+	c.observe(recordScore{finalScore: 90, shadowFinalScore: 95}, 75) // both alert
+	c.observe(recordScore{finalScore: 88, shadowFinalScore: 40}, 75) // live only
+	c.observe(recordScore{finalScore: 60, shadowFinalScore: 80}, 75) // shadow only
+	c.observe(recordScore{finalScore: 30, shadowFinalScore: 20}, 75) // neither
 
 	if c.liveTotal != 2 {
 		t.Errorf("liveTotal = %d, want 2", c.liveTotal)
